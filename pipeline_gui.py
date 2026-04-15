@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import numpy as np, pandas as pd, matplotlib.pyplot as plt, pyxdf, neurokit2 as nk
 from scipy.signal import butter, filtfilt, savgol_filter
+import re
 
 class App:
     def __init__(self, root):
@@ -268,7 +269,54 @@ class App:
         op=self.cln/Path(p).name; df.to_csv(op,index=False); return op
 
     def open_feature_gui(self):
-        FeatureWindow(self.r, self.cln, self.fea, cleaned_default=self.cleaned.get().strip() or self.csv.get().strip())
+        cpath=self.cleaned.get().strip()
+        if not cpath or not Path(cpath).is_file():
+            cands=sorted(self.cln.glob('*.csv'),key=lambda p:p.stat().st_mtime,reverse=True)
+            if cands:
+                cpath=str(cands[0])
+            else:
+                cpath=self.csv.get().strip()
+        if not cpath or not Path(cpath).is_file():
+            return messagebox.showerror('Feature GUI', 'No valid cleaned CSV found. Run cleaning first or load latest folders.')
+
+        ld=tk.Toplevel(self.r)
+        ld.title('Loading Feature GUI')
+        ld.geometry('420x120')
+        ld.transient(self.r)
+        ld.grab_set()
+        ttk.Label(ld,text='Loading markers and preparing Feature GUI...').pack(anchor='w',padx=12,pady=(12,8))
+        pb=ttk.Progressbar(ld,mode='indeterminate'); pb.pack(fill='x',padx=12,pady=(0,6)); pb.start(10)
+        status=tk.StringVar(value='Reading cleaned CSV...')
+        ttk.Label(ld,textvariable=status,foreground='#1f4f8a').pack(anchor='w',padx=12)
+        ld.update_idletasks()
+
+        def worker():
+            try:
+                df=pd.read_csv(cpath)
+                marker_cols=[c for c in df.columns if 'marker' in c.lower() or 'event' in c.lower()]
+                def done():
+                    try:
+                        pb.stop()
+                        ld.grab_release()
+                        ld.destroy()
+                    except Exception:
+                        pass
+                    fw=FeatureWindow(self.r, self.cln, self.fea, cleaned_default=cpath, preload_df=df, preload_marker_cols=marker_cols)
+                    if not marker_cols:
+                        messagebox.showwarning('Feature GUI', 'Loaded CSV, but no marker/event columns were found.', parent=fw.top)
+                self.r.after(0, done)
+            except Exception as e:
+                def fail():
+                    try:
+                        pb.stop()
+                        ld.grab_release()
+                        ld.destroy()
+                    except Exception:
+                        pass
+                    messagebox.showerror('Feature GUI Load Error', f'{e}\n\n{traceback.format_exc()}')
+                self.r.after(0, fail)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def run_all(self):
         def task():
@@ -426,7 +474,7 @@ class FeatureWindow:
         'XDF_OpenFaceRealtime_emo_Neutral_pct','XDF_OpenFaceRealtime_emo_Happy_pct','XDF_OpenFaceRealtime_emo_Sad_pct','XDF_OpenFaceRealtime_emo_Surprise_pct',
         'XDF_OpenFaceRealtime_emo_Fear_pct','XDF_OpenFaceRealtime_emo_Disgust_pct','XDF_OpenFaceRealtime_emo_Anger_pct','XDF_OpenFaceRealtime_emo_Contempt_pct'
     ]
-    def __init__(self, parent, cleaned_dir: Path, features_dir: Path, cleaned_default=''):
+    def __init__(self, parent, cleaned_dir: Path, features_dir: Path, cleaned_default='', preload_df=None, preload_marker_cols=None):
         self.top=tk.Toplevel(parent); self.top.title('Marker-Based Feature Extraction'); self.top.geometry('980x560')
         self.cleaned_dir=Path(cleaned_dir); self.features_dir=Path(features_dir); self.features_dir.mkdir(parents=True, exist_ok=True)
         self.main_thread=threading.current_thread()
@@ -436,6 +484,13 @@ class FeatureWindow:
         self.status=tk.StringVar(value='Ready.'); self.progress=tk.DoubleVar(value=0.0); self.progress_text=tk.StringVar(value='0%')
         self.df=None
         self._ui()
+        if preload_df is not None:
+            self.df=preload_df
+            marker_cols=preload_marker_cols if preload_marker_cols is not None else [c for c in self.df.columns if 'marker' in c.lower() or 'event' in c.lower()]
+            self.c_marker['values']=marker_cols
+            if marker_cols:
+                self.marker_col.set(marker_cols[0])
+                self.marker_values()
 
     def _ui(self):
         container=ttk.Frame(self.top); container.pack(fill='both',expand=True)
@@ -459,12 +514,15 @@ class FeatureWindow:
         ttk.Label(s,text='Start marker').grid(row=1,column=0,sticky='w'); self.c_start=ttk.Combobox(s,textvariable=self.start_marker,state='readonly',width=35); self.c_start.grid(row=1,column=1,sticky='w',padx=6)
         ttk.Label(s,text='End marker').grid(row=2,column=0,sticky='w'); self.c_end=ttk.Combobox(s,textvariable=self.end_marker,state='readonly',width=35); self.c_end.grid(row=2,column=1,sticky='w',padx=6)
         ttk.Label(s,text='Segment label').grid(row=3,column=0,sticky='w'); ttk.Entry(s,textvariable=self.segment_label,width=36).grid(row=3,column=1,sticky='w',padx=6)
-        self.btn_compute=ttk.Button(s,text='Compute Selected Segment Features',command=self.compute_segment)
-        self.btn_compute.grid(row=4,column=1,sticky='w',pady=8)
+        act=ttk.Frame(s); act.grid(row=4,column=1,sticky='w',pady=8)
+        self.btn_compute=ttk.Button(act,text='Compute Selected Segment Features',command=self.compute_segment)
+        self.btn_compute.pack(side='left',padx=(0,8))
+        self.btn_auto=ttk.Button(act,text='Compute Features Automatically for Experiment Phases',command=self.compute_auto_phases)
+        self.btn_auto.pack(side='left')
 
         rv=ttk.LabelFrame(m,text='Computed Feature Rows',padding=8); rv.pack(fill='both',expand=True,pady=6)
         rr=ttk.Frame(rv); rr.pack(fill='x',pady=(0,6))
-        ttk.Button(rr,text='Load Saved Feature CSV',command=self.load_saved_features).pack(side='left')
+        ttk.Button(rr,text='Load Previously Calculated CSV',command=self.load_saved_features).pack(side='left')
         self.result_cols=('segment_label','start_marker','end_marker','mean_hr_bpm','hrv_rmssd_ms','hrv_sdnn_ms','mean_resp_bpm','n_breaths')
         self.tree=ttk.Treeview(rv,columns=self.result_cols,show='headings',height=8)
         for c in self.result_cols:
@@ -506,6 +564,148 @@ class FeatureWindow:
         except Exception as e:
             messagebox.showerror('Load Error',f'{e}\n\n{traceback.format_exc()}',parent=self.top)
 
+    @staticmethod
+    def _marker_candidates(df: pd.DataFrame):
+        cands=[c for c in df.columns if 'marker' in c.lower() or 'event' in c.lower()]
+        cands=sorted(cands, key=lambda c: int(df[c].notna().sum()), reverse=True)
+        return cands
+
+    @staticmethod
+    def _event_sequence(df: pd.DataFrame, marker_col: str):
+        ms=df[marker_col].fillna('').astype(str).str.strip().tolist()
+        events=[]
+        prev=''
+        for i,v in enumerate(ms):
+            if not v:
+                continue
+            if v==prev:
+                continue
+            events.append((i,v))
+            prev=v
+        return events
+
+    @staticmethod
+    def _norm_marker(v):
+        return str(v).strip().lower()
+
+    @staticmethod
+    def _is_start_marker(v: str):
+        x=FeatureWindow._norm_marker(v)
+        return any(k in x for k in ['_start','_begin','_reset','onset'])
+
+    @staticmethod
+    def _is_end_marker(v: str):
+        x=FeatureWindow._norm_marker(v)
+        return any(k in x for k in ['_end','_end_auto','_stop','offset'])
+
+    @staticmethod
+    def _phase_key(v: str):
+        x=FeatureWindow._norm_marker(v)
+        x=x.replace(' ', '_')
+        x=re.sub(r'(_end_auto|_end|_stop|_offset|_start|_begin|_reset)$','',x)
+        return x
+
+    @staticmethod
+    def _phase_token(v: str):
+        x=FeatureWindow._norm_marker(v)
+        m=re.search(r'_t(\d+)', x)
+        if m:
+            return f"t{m.group(1)}"
+        m2=re.search(r'\bt(\d+)\b', x)
+        if m2:
+            return f"t{m2.group(1)}"
+        return ''
+
+    @staticmethod
+    def _phase_type(v: str):
+        x=FeatureWindow._norm_marker(v)
+        if 'baseline' in x: return 'baseline'
+        if 'trial' in x: return 'trial'
+        if 'briefing' in x: return 'briefing'
+        return ''
+
+    def _detect_phase_pairs(self, df: pd.DataFrame, marker_col: str):
+        idx_vals=self._event_sequence(df, marker_col)
+        pairs=[]; used_ends=set()
+        for pos,(i,mv) in enumerate(idx_vals):
+            if not self._is_start_marker(mv):
+                continue
+            ptype=self._phase_type(mv)
+            if ptype not in {'baseline','trial','briefing'}:
+                continue
+            key=self._phase_key(mv)
+            tok=self._phase_token(mv)
+            end_pick=None
+            for j,m2 in idx_vals[pos+1:]:
+                if j in used_ends:
+                    continue
+                if not self._is_end_marker(m2):
+                    continue
+                if self._phase_type(m2)!=ptype:
+                    continue
+                m2_tok=self._phase_token(m2)
+                if tok and m2_tok and tok==m2_tok:
+                    end_pick=(j,m2); break
+                if (not tok) and self._phase_key(m2)==key:
+                    end_pick=(j,m2); break
+            if end_pick is None:
+                continue
+            used_ends.add(end_pick[0])
+            label=key if key else f'segment_{len(pairs)+1}'
+            pairs.append((label, i, mv, end_pick[0], end_pick[1]))
+        return pairs
+
+    def compute_auto_phases(self):
+        p=self.csv.get().strip()
+        if not p or not Path(p).is_file():
+            cands=sorted(self.cleaned_dir.glob('*.csv'),key=lambda z:z.stat().st_mtime,reverse=True)
+            if cands:
+                p=str(cands[0]); self.csv.set(p)
+            else:
+                self.set_progress(0,'Auto phase setup skipped: no cleaned CSV found.')
+                messagebox.showwarning('Auto Phase Features','No cleaned CSV found. Run cleaning first or choose a cleaned CSV in Feature GUI.',parent=self.top)
+                return
+        def task():
+            self.set_progress(5,'Auto feature setup: loading cleaned CSV...')
+            df=pd.read_csv(p); self.df=df
+            marker_cols=self._marker_candidates(df)
+            if not marker_cols:
+                raise RuntimeError('No marker/event column found for auto phase extraction.')
+            marker_col=marker_cols[0]
+            pairs=self._detect_phase_pairs(df, marker_col)
+            if not pairs:
+                raise RuntimeError('No start/end phase marker pairs detected automatically.')
+            n_base=sum(1 for x in pairs if 'baseline' in x[0].lower())
+            n_trial=sum(1 for x in pairs if 'trial' in x[0].lower())
+            n_brief=sum(1 for x in pairs if 'briefing' in x[0].lower())
+            self.set_progress(20,f'Auto feature setup: {len(pairs)} phases (briefing={n_brief}, baseline={n_base}, trial={n_trial})...')
+            rows=[]
+            n=max(1,len(pairs))
+            for k,(label,i0,m0,i1,m1) in enumerate(pairs):
+                self.set_progress(20 + 70*((k+1)/n), f'Computing phase {k+1}/{n}: {label}')
+                seg=df.loc[i0:i1].copy()
+                feats=self._seg_features(seg)
+                row={'file':Path(p).name,'segment_label':label,'marker_col':marker_col,'start_marker':m0,'end_marker':m1,'start_idx':int(i0),'end_idx':int(i1)}
+                row.update(feats); rows.append(row)
+            out=pd.DataFrame(rows)
+            out_path=self.features_dir/f"{Path(p).stem}_marker_features.csv"
+            self.set_progress(95,'Saving auto phase features...')
+            out.to_csv(out_path,index=False)
+            return (df, marker_col, out_path, rows)
+        def ok(res):
+            df, marker_col, out_path, rows=res
+            self.df=df
+            mcols=self._marker_candidates(df)
+            self.c_marker['values']=mcols
+            self.marker_col.set(marker_col)
+            self.marker_values()
+            for i in self.tree.get_children():
+                self.tree.delete(i)
+            for r in rows:
+                self._append_tree_row(r)
+            self.set_progress(100, f'Auto phase features ready ({len(rows)} rows).')
+        self._bg(task, ok, 'Auto Phase Features')
+
     def set_progress(self,p,msg=None):
         if threading.current_thread() is not self.main_thread:
             self.top.after(0, lambda: self.set_progress(p,msg)); return
@@ -517,7 +717,9 @@ class FeatureWindow:
         if threading.current_thread() is not self.main_thread:
             self.top.after(0, lambda: self.set_busy(is_busy)); return
         self.busy=bool(is_busy)
-        self.btn_compute.configure(state=('disabled' if self.busy else 'normal'))
+        st=('disabled' if self.busy else 'normal')
+        self.btn_compute.configure(state=st)
+        self.btn_auto.configure(state=st)
 
     def _bg(self, task, on_ok, label):
         if self.busy:

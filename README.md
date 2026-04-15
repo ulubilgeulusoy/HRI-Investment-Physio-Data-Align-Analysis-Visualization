@@ -91,11 +91,16 @@ Startup behavior:
 
 - **Feature extraction approach**:
   - Feature extraction is marker-based and done in the separate Feature GUI.
-  - Select marker column + start/end marker (for example baseline start/end), then compute segment features.
+  - When you click `Open Feature GUI`, a small loading window appears first.
+  - The Feature GUI opens only after marker loading completes.
+  - You can:
+    - compute one selected marker segment (`Compute Selected Segment Features`)
+    - compute all detected experiment phases (`Compute Features Automatically for Experiment Phases`)
+    - load prior results (`Load Previously Calculated CSV`)
   - Feature GUI includes:
     - progress bar during compute
     - an in-window `Computed Feature Rows` table
-    - `Load Saved Feature CSV` button to reload previously saved feature rows
+    - `Load Previously Calculated CSV` button to reload saved feature rows
 
 ## Typical GUI Workflow
 
