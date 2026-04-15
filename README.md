@@ -81,13 +81,13 @@ Startup behavior:
    - Large CSV/XDF loading uses background execution with progress updates, so the GUI remains responsive.
    - Both main GUI and Feature GUI are vertically scrollable.
 
-### GUI Parameter Controls
+### GUI Controls
 
-- **Alignment controls**:
-  - `Flat win(s)`: flatline detection window
-  - `Flat rel`: flatline relative std threshold
-  - `ASOF tol(s)`: nearest-neighbor merge tolerance for irregular streams
-  - `Include non-physio XDF streams`: adds additional XDF streams to aligned output
+- **Alignment options**:
+  - `Include extra XDF streams (markers/OpenFace/robot states) in aligned CSV`:
+    - ON: aligned CSV includes non-physio XDF streams such as experiment markers, OpenFace outputs, and robot state channels.
+    - OFF: aligned CSV excludes those extra non-physio streams, resulting in a smaller/narrower file focused on core aligned signals.
+  - Advanced alignment thresholds are intentionally fixed in code (not exposed in GUI) for simpler operation.
 
 - **Feature extraction approach**:
   - Feature extraction is marker-based and done in the separate Feature GUI.

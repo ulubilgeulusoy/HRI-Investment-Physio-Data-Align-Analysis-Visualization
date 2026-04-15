@@ -45,18 +45,19 @@ class App:
         f1.columnconfigure(1,weight=1)
 
         f2=ttk.LabelFrame(m,text='2) Pipeline',padding=8); f2.pack(fill='x',pady=4)
-        ttk.Label(f2,text='Flat win(s)').grid(row=0,column=0,sticky='w'); ttk.Entry(f2,textvariable=self.flat_win,width=9).grid(row=0,column=1,sticky='w',padx=6)
-        ttk.Label(f2,text='Flat rel').grid(row=0,column=2,sticky='w'); ttk.Entry(f2,textvariable=self.flat_rel,width=9).grid(row=0,column=3,sticky='w',padx=6)
-        ttk.Label(f2,text='ASOF tol(s)').grid(row=0,column=4,sticky='w'); ttk.Entry(f2,textvariable=self.tol,width=9).grid(row=0,column=5,sticky='w',padx=6)
-        ttk.Checkbutton(f2,text='Include non-physio XDF streams',variable=self.include).grid(row=1,column=0,columnspan=3,sticky='w')
-        ttk.Label(f2,text='Feature extraction is marker-based in a separate window.').grid(row=2,column=0,columnspan=6,sticky='w')
-        b=ttk.Frame(f2); b.grid(row=3,column=0,columnspan=6,sticky='w',pady=6)
+        ttk.Checkbutton(
+            f2,
+            text='Include extra XDF streams (markers/OpenFace/robot states) in aligned CSV',
+            variable=self.include
+        ).grid(row=0,column=0,columnspan=6,sticky='w')
+        ttk.Label(f2,text='Feature extraction is marker-based in a separate window.').grid(row=1,column=0,columnspan=6,sticky='w')
+        b=ttk.Frame(f2); b.grid(row=2,column=0,columnspan=6,sticky='w',pady=6)
         self.btn_align=ttk.Button(b,text='Run Alignment',command=self.run_align_btn); self.btn_align.pack(side='left',padx=(0,8))
         self.btn_clean=ttk.Button(b,text='Run Cleaning',command=self.run_clean_btn); self.btn_clean.pack(side='left',padx=(0,8))
         self.btn_feature=ttk.Button(b,text='Open Feature GUI',command=self.open_feature_gui); self.btn_feature.pack(side='left',padx=(0,8))
         self.btn_all=ttk.Button(b,text='Run Full Pipeline (Align+Clean)',command=self.run_all); self.btn_all.pack(side='left')
-        ttk.Label(f2,text='Aligned CSV').grid(row=4,column=0,sticky='w'); ttk.Entry(f2,textvariable=self.aligned,width=95).grid(row=4,column=1,columnspan=5,sticky='we',padx=6)
-        ttk.Label(f2,text='Cleaned CSV').grid(row=5,column=0,sticky='w'); ttk.Entry(f2,textvariable=self.cleaned,width=95).grid(row=5,column=1,columnspan=5,sticky='we',padx=6)
+        ttk.Label(f2,text='Aligned CSV').grid(row=3,column=0,sticky='w'); ttk.Entry(f2,textvariable=self.aligned,width=95).grid(row=3,column=1,columnspan=5,sticky='we',padx=6)
+        ttk.Label(f2,text='Cleaned CSV').grid(row=4,column=0,sticky='w'); ttk.Entry(f2,textvariable=self.cleaned,width=95).grid(row=4,column=1,columnspan=5,sticky='we',padx=6)
         f3=ttk.LabelFrame(m,text='3) Visualizers',padding=8); f3.pack(fill='x',pady=4)
         ttk.Label(f3,text='CSV').grid(row=0,column=0,sticky='w'); ttk.Entry(f3,textvariable=self.csv,width=95).grid(row=0,column=1,sticky='we',padx=6); ttk.Button(f3,text='Browse',command=self.pick_csv).grid(row=0,column=2)
         ttk.Button(f3,text='Load CSV Columns',command=self.load_cols).grid(row=1,column=1,sticky='w',pady=4)
@@ -483,6 +484,8 @@ class FeatureWindow:
         self.marker_col=tk.StringVar(); self.start_marker=tk.StringVar(); self.end_marker=tk.StringVar(); self.segment_label=tk.StringVar(value='segment')
         self.status=tk.StringVar(value='Ready.'); self.progress=tk.DoubleVar(value=0.0); self.progress_text=tk.StringVar(value='0%')
         self.df=None
+        self.marker_events=[]
+        self.display_to_event={}
         self._ui()
         if preload_df is not None:
             self.df=preload_df
@@ -591,12 +594,17 @@ class FeatureWindow:
     @staticmethod
     def _is_start_marker(v: str):
         x=FeatureWindow._norm_marker(v)
-        return any(k in x for k in ['_start','_begin','_reset','onset'])
+        return any(k in x for k in ['_start','_begin','onset'])
 
     @staticmethod
     def _is_end_marker(v: str):
         x=FeatureWindow._norm_marker(v)
         return any(k in x for k in ['_end','_end_auto','_stop','offset'])
+
+    @staticmethod
+    def _is_reset_marker(v: str):
+        x=FeatureWindow._norm_marker(v)
+        return ('_reset' in x) or x.endswith('reset')
 
     @staticmethod
     def _phase_key(v: str):
@@ -626,33 +634,36 @@ class FeatureWindow:
 
     def _detect_phase_pairs(self, df: pd.DataFrame, marker_col: str):
         idx_vals=self._event_sequence(df, marker_col)
-        pairs=[]; used_ends=set()
-        for pos,(i,mv) in enumerate(idx_vals):
-            if not self._is_start_marker(mv):
-                continue
+        phases={'baseline','trial','briefing'}
+        open_start={}
+        pairs=[]
+        for i,mv in idx_vals:
             ptype=self._phase_type(mv)
-            if ptype not in {'baseline','trial','briefing'}:
+            if ptype not in phases:
                 continue
-            key=self._phase_key(mv)
             tok=self._phase_token(mv)
-            end_pick=None
-            for j,m2 in idx_vals[pos+1:]:
-                if j in used_ends:
-                    continue
-                if not self._is_end_marker(m2):
-                    continue
-                if self._phase_type(m2)!=ptype:
-                    continue
-                m2_tok=self._phase_token(m2)
-                if tok and m2_tok and tok==m2_tok:
-                    end_pick=(j,m2); break
-                if (not tok) and self._phase_key(m2)==key:
-                    end_pick=(j,m2); break
-            if end_pick is None:
+            key=self._phase_key(mv)
+            phase_id=(ptype, tok if tok else key)
+
+            if self._is_reset_marker(mv):
+                # reset invalidates any previously open start for this phase
+                if phase_id in open_start:
+                    del open_start[phase_id]
                 continue
-            used_ends.add(end_pick[0])
-            label=key if key else f'segment_{len(pairs)+1}'
-            pairs.append((label, i, mv, end_pick[0], end_pick[1]))
+
+            if self._is_start_marker(mv):
+                # latest start wins (important after reset/restart)
+                open_start[phase_id]=(i,mv,key)
+                continue
+
+            if self._is_end_marker(mv):
+                if phase_id not in open_start:
+                    continue
+                si,sm,label_key=open_start.pop(phase_id)
+                label=label_key if label_key else f'segment_{len(pairs)+1}'
+                pairs.append((label, si, sm, i, mv))
+                continue
+
         return pairs
 
     def compute_auto_phases(self):
@@ -763,10 +774,28 @@ class FeatureWindow:
         if self.df is None: return
         c=self.marker_col.get().strip()
         if c not in self.df.columns: return
-        vals=self.df[c].dropna().astype(str); vals=vals[vals.str.strip()!='']; uniq=list(dict.fromkeys(vals.tolist()))
-        self.c_start['values']=uniq; self.c_end['values']=uniq
-        if uniq and not self.start_marker.get(): self.start_marker.set(uniq[0])
-        if uniq and not self.end_marker.get(): self.end_marker.set(uniq[min(1,len(uniq)-1)])
+        self.marker_events=self._event_sequence(self.df, c)
+        self.display_to_event={}
+        displays=[]
+        counts={}
+        for idx,val in self.marker_events:
+            key=val.strip()
+            counts[key]=counts.get(key,0)+1
+            disp=f"[{idx}] {key} (#{counts[key]})"
+            displays.append(disp)
+            self.display_to_event[disp]=(idx,key)
+        self.c_start['values']=displays; self.c_end['values']=displays
+        if displays and not self.start_marker.get(): self.start_marker.set(displays[0])
+        if displays and not self.end_marker.get(): self.end_marker.set(displays[min(1,len(displays)-1)])
+
+    def _resolve_marker_selection(self, selection: str, marker_col: str):
+        s=(selection or '').strip()
+        if s in self.display_to_event:
+            return self.display_to_event[s]
+        for idx,val in self._event_sequence(self.df, marker_col):
+            if val.strip()==s:
+                return (idx,s)
+        raise RuntimeError(f"Selected marker not found: {s}")
 
     @staticmethod
     def _seg_features(df_seg: pd.DataFrame):
@@ -799,18 +828,20 @@ class FeatureWindow:
         if self.df is None: return messagebox.showerror('Error','Load a cleaned CSV first.',parent=self.top)
         c=self.marker_col.get().strip(); s=self.start_marker.get().strip(); e=self.end_marker.get().strip(); label=(self.segment_label.get().strip() or 'segment')
         if c not in self.df.columns or not s or not e: return messagebox.showerror('Error','Select marker column, start marker, and end marker.',parent=self.top)
-        m=self.df[c].fillna('').astype(str).str.strip(); sh=self.df.index[m==s].tolist()
-        if not sh: return messagebox.showerror('Error',f"Start marker '{s}' not found.",parent=self.top)
-        i0=sh[0]; eh=self.df.index[(m==e)&(self.df.index>i0)].tolist()
-        if not eh: return messagebox.showerror('Error',f"No end marker '{e}' found after '{s}'.",parent=self.top)
-        i1=eh[0]
+        try:
+            i0,s_raw=self._resolve_marker_selection(s, c)
+            i1,e_raw=self._resolve_marker_selection(e, c)
+        except Exception as ex:
+            return messagebox.showerror('Error',str(ex),parent=self.top)
+        if i1 <= i0:
+            return messagebox.showerror('Error','End marker must be after start marker.',parent=self.top)
         def task():
             self.set_progress(12,'Preparing selected segment...')
             seg=self.df.loc[i0:i1].copy()
             self.set_progress(38,'Computing HR/HRV/RSP features...')
             feats=self._seg_features(seg)
             self.set_progress(80,'Saving feature row...')
-            row={'file':Path(self.csv.get().strip()).name,'segment_label':label,'marker_col':c,'start_marker':s,'end_marker':e,'start_idx':int(i0),'end_idx':int(i1)}
+            row={'file':Path(self.csv.get().strip()).name,'segment_label':label,'marker_col':c,'start_marker':s_raw,'end_marker':e_raw,'start_idx':int(i0),'end_idx':int(i1)}
             row.update(feats); out_row=pd.DataFrame([row])
             out_path=self.features_dir/f"{Path(self.csv.get().strip()).stem}_marker_features.csv"
             if out_path.exists():
