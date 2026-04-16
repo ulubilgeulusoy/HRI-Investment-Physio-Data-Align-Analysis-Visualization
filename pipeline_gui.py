@@ -149,6 +149,70 @@ class App:
         m=(c1[w:]-c1[:-w])/w; v=(c2[w:]-c2[:-w])/w-m*m; v[v<0]=0; s=np.sqrt(v); idx=np.where(s<thr)[0]
         return int(idx[0]) if len(idx) else None
 
+    def _flat_idxs(self, sig, sr, max_hits=24):
+        x=np.asarray(sig,float); w=max(1,int(round(self.flat_win.get()*sr)))
+        if len(x)<w+2: return []
+        thr=max(1e-4,self.flat_rel.get()*float(np.std(x))); c1=np.cumsum(x); c2=np.cumsum(x*x)
+        m=(c1[w:]-c1[:-w])/w; v=(c2[w:]-c2[:-w])/w-m*m; v[v<0]=0; s=np.sqrt(v); idx=np.where(s<thr)[0]
+        if len(idx)==0: return []
+        # Keep separated starts of low-variance runs, then cap count.
+        keep=[int(idx[0])]
+        for k in idx[1:]:
+            if int(k)-keep[-1] >= w:
+                keep.append(int(k))
+        if len(keep)>max_hits:
+            sel=np.linspace(0,len(keep)-1,max_hits).round().astype(int)
+            keep=[keep[i] for i in sel]
+        return keep
+
+    def _flat_end_anchor_idx(self, sig, sr, min_tail_s=3.0):
+        """Earliest onset in tail where flatline dominates until end."""
+        x=np.asarray(sig,float); w=max(1,int(round(self.flat_win.get()*sr)))
+        if len(x)<w+2: return None
+        thr=max(1e-4,self.flat_rel.get()*float(np.std(x))); c1=np.cumsum(x); c2=np.cumsum(x*x)
+        m=(c1[w:]-c1[:-w])/w; v=(c2[w:]-c2[:-w])/w-m*m; v[v<0]=0; s=np.sqrt(v)
+        ok=(s<thr)
+        if not np.any(ok):
+            return None
+
+        # Fill small non-flat gaps so one tail flatline isn't split into multiple runs.
+        max_gap=max(1,int(round(2.5*sr/w)))
+        i=0; n=len(ok)
+        while i<n:
+            if ok[i]:
+                i+=1; continue
+            j=i
+            while j<n and (not ok[j]): j+=1
+            if i>0 and j<n and ok[i-1] and ok[j] and (j-i)<=max_gap:
+                ok[i:j]=True
+            i=j
+
+        min_run=max(1,int(round(min_tail_s*sr/w)))
+        idx=np.where(ok)[0]
+        runs=[]
+        rs=idx[0]; prev=idx[0]
+        for k in idx[1:]:
+            if int(k)==int(prev)+1:
+                prev=k
+            else:
+                runs.append((int(rs),int(prev)))
+                rs=k; prev=k
+        runs.append((int(rs),int(prev)))
+        runs=[r for r in runs if (r[1]-r[0]+1)>=min_run]
+        if not runs:
+            return None
+
+        # Choose earliest run start whose remaining tail is mostly flat.
+        flat_ratio_req=0.80
+        for rs,_ in runs:
+            tail=ok[rs:]
+            if len(tail)>=min_run and float(np.mean(tail))>=flat_ratio_req:
+                return int(rs)
+        # Fallback to earliest run among the latest two runs (prefer first of split tail plateaus).
+        if len(runs)>=2:
+            return int(runs[-2][0])
+        return int(runs[-1][0])
+
     def _clean(self,s):
         s=str(s).strip().replace(' ','_'); s=''.join(ch for ch in s if ch.isalnum() or ch in ['_','-']); return s or 'ch'
 
@@ -157,6 +221,27 @@ class App:
             z=(n+' '+t).lower()
             if any(k in z for k in ['biopac','phys','ecg','rsp','eda','gsr']): return i
         return max(meta,key=lambda x:x[3])[0] if meta else None
+
+    def _phys_best(self, streams, meta):
+        """Pick the most likely physio stream by keywords and longest duration."""
+        if not meta:
+            return None
+        keys=['biopac','psychophys','phys','ecg','rsp','eda','gsr']
+        scored=[]
+        for i,n,t,c,r in meta:
+            z=(str(n)+' '+str(t)).lower()
+            is_phys=1 if any(k in z for k in keys) else 0
+            dur=0.0
+            try:
+                ts=np.asarray(streams[i]['time_stamps'],float)
+                if len(ts)>=2:
+                    dur=float(np.nanmax(ts)-np.nanmin(ts))
+            except Exception:
+                dur=0.0
+            scored.append((is_phys,dur,int(c),float(r),i,str(n),str(t)))
+        phys=[x for x in scored if x[0]==1]
+        pick=max(phys,key=lambda x:(x[1],x[2],x[3])) if phys else max(scored,key=lambda x:(x[1],x[2],x[3]))
+        return pick[4]
 
     def run_align_btn(self):
         def ok(p):
@@ -171,24 +256,57 @@ class App:
         meta=[]
         for i,st in enumerate(streams): info=st['info']; meta.append((i,info.get('name',[''])[0],info.get('type',[''])[0],int(info.get('channel_count',['0'])[0]),float(info.get('nominal_srate',['0'])[0] or 0.0)))
         if not meta: raise RuntimeError('No streams in XDF.')
-        pi=self._phys(meta); ps=streams[pi]; xr=pd.DataFrame(ps['time_series']); xt=np.asarray(ps['time_stamps'],float); xt0=xt-xt[0]
+        pi=self._phys_best(streams, meta)
+        if pi is None:
+            raise RuntimeError('Could not select a physio XDF stream.')
+        ps=streams[pi]; xr=pd.DataFrame(ps['time_series']); xt=np.asarray(ps['time_stamps'],float); xt0=xt-xt[0]
+        if len(xt0)<2:
+            raise RuntimeError('Chosen physio XDF stream has too few timestamps.')
         dt=np.diff(xt0); dt=dt[(dt>0)&(dt<1.0)]; xsr=float(1.0/np.median(dt)) if len(dt) else None
         if xsr is None: raise RuntimeError('Could not estimate XDF SR.')
+        self.set(f"Alignment: selected physio stream '{meta[pi][1]}' ({meta[pi][2]}), duration {float(xt0[-1]):.1f}s")
         if xr.shape[1]==2: xr.columns=['ECG','RSP']
         elif xr.shape[1]>=3: xr.columns=['RSP','EDA','ECG']+[f'XDF_{i}' for i in range(3,xr.shape[1])]
         else: xr.columns=['ECG']
-        xa=None; xc=None
-        for c in [k for k in ['ECG','RSP','EDA'] if k in xr.columns]+[k for k in xr.columns if k not in ['ECG','RSP','EDA']]:
-            i=self._flat_idx(xr[c].values, xsr)
-            if i is not None: xa=float(xt0[i]); xc=c; break
-        if xa is None: raise RuntimeError('No flatline found in XDF physio stream.')
-        aa=None
-        order=[xc] if xc in adf.columns else []; order += [c for c in ['ECG','RSP','EDA'] if c in adf.columns and c not in order]; order += [c for c in adf.columns if c not in order]
-        for c in order:
-            i=self._flat_idx(adf[c].values, asr)
-            if i is not None: aa=float(i/asr); break
-        if aa is None: raise RuntimeError('No matching flatline in ACQ.')
-        t_opt=aa-xa; total=float(xt0[-1]); at=np.arange(len(adf),dtype=float)/asr; ash=at-t_opt; si=int(np.sum(ash<0)); ei=int(np.sum(ash<total))
+        xa=None; xc=None; aa=None; ac=None; t_opt=None
+        # Primary strategy: align by onset of last sustained flatline on same channel.
+        chan_pref=[c for c in ['ECG','RSP','EDA'] if c in xr.columns and c in adf.columns]
+        chan_pref += [c for c in xr.columns if c in adf.columns and c not in chan_pref]
+        for c in chan_pref:
+            xi=self._flat_end_anchor_idx(xr[c].values, xsr)
+            ai=self._flat_end_anchor_idx(adf[c].values, asr)
+            if xi is not None and ai is not None:
+                xa=float(xt0[xi]); xc=c; aa=float(ai/asr); ac=c; t_opt=aa-xa
+                self.set(f"Alignment anchors (end-flatline): XDF {xc}@{xa:.3f}s, ACQ {ac}@{aa:.3f}s")
+                break
+
+        # Fallback: maximize overlap across multiple flatline candidates.
+        total=float(xt0[-1]); acq_dur=float((len(adf)-1)/asr) if len(adf)>1 else 0.0
+        if t_opt is None:
+            xscan=[k for k in ['ECG','RSP','EDA'] if k in xr.columns]+[k for k in xr.columns if k not in ['ECG','RSP','EDA']]
+            xhits=[]
+            for c in xscan:
+                ids=self._flat_idxs(xr[c].values, xsr)
+                for i in ids: xhits.append((float(xt0[i]),c,i))
+            if not xhits: raise RuntimeError('No flatline found in XDF physio stream.')
+            order=[c for c in ['ECG','RSP','EDA'] if c in adf.columns]+[c for c in adf.columns if c not in ['ECG','RSP','EDA']]
+            ahits=[]
+            for c in order:
+                ids=self._flat_idxs(adf[c].values, asr)
+                for i in ids: ahits.append((float(i/asr),c,i))
+            if not ahits: raise RuntimeError('No flatline found in ACQ.')
+            best=None
+            for xt_anchor,xcand,_ in xhits:
+                for at_anchor,acand,_ in ahits:
+                    t=at_anchor-xt_anchor
+                    overlap=max(0.0, min(acq_dur, t+total)-max(0.0,t))
+                    score=(overlap, -abs(t))
+                    if (best is None) or (score>best[0]):
+                        best=(score, xt_anchor, xcand, at_anchor, acand, t, overlap)
+            _, xa, xc, aa, ac, t_opt, best_overlap = best
+            self.set(f"Alignment anchors (fallback): XDF {xc}@{xa:.3f}s, ACQ {ac}@{aa:.3f}s, overlap {best_overlap/60:.2f} min")
+
+        at=np.arange(len(adf),dtype=float)/asr; ash=at-t_opt; si=int(np.sum(ash<0)); ei=int(np.sum(ash<total))
         if ei<=si+2: raise RuntimeError('After trim ACQ too short.')
         trim=adf.iloc[si:ei].copy(); at_abs=ash[si:ei]+float(xt[0]); out=pd.DataFrame({'time':at_abs})
         for c in trim.columns: out[f'ACQ_{self._clean(c)}']=trim[c].values
