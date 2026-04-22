@@ -17,6 +17,7 @@ class App:
         self.acq=tk.StringVar(); self.xdf=tk.StringVar(); self.aligned=tk.StringVar(); self.cleaned=tk.StringVar(); self.csv=tk.StringVar(); self.status=tk.StringVar(value='Ready.')
         self.progress=tk.DoubleVar(value=0.0); self.progress_text=tk.StringVar(value='0%')
         self.flat_win=tk.DoubleVar(value=2.0); self.flat_rel=tk.DoubleVar(value=0.02); self.tol=tk.DoubleVar(value=0.05); self.include=tk.BooleanVar(value=True)
+        self.align_mode=tk.StringVar(value='auto_flatline'); self.manual_t_opt=tk.DoubleVar(value=0.0); self.xdf_anchor_last_s=tk.DoubleVar(value=60.0)
         self.scope=tk.StringVar(value='all'); self.xcol=tk.StringVar(); self.ycol=tk.StringVar(); self.mcol=tk.StringVar(); self.mstart=tk.StringVar(); self.mend=tk.StringVar()
         self.ov_csv_col=tk.StringVar(); self.ov_stream=tk.StringVar(); self.ov_xdf_col=tk.StringVar()
         self.ov_streams=[]; self.ov_stream_map={}
@@ -50,14 +51,27 @@ class App:
             text='Include extra XDF streams (markers/OpenFace/robot states) in aligned CSV',
             variable=self.include
         ).grid(row=0,column=0,columnspan=6,sticky='w')
-        ttk.Label(f2,text='Feature extraction is marker-based in a separate window.').grid(row=1,column=0,columnspan=6,sticky='w')
-        b=ttk.Frame(f2); b.grid(row=2,column=0,columnspan=6,sticky='w',pady=6)
+        ttk.Label(f2,text='Alignment mode').grid(row=1,column=0,sticky='w')
+        self.align_mode_cb=ttk.Combobox(
+            f2,
+            textvariable=self.align_mode,
+            state='readonly',
+            width=20,
+            values=['auto_flatline','end_to_end','manual_offset']
+        )
+        self.align_mode_cb.grid(row=1,column=1,sticky='w',padx=6)
+        ttk.Label(f2,text='XDF anchor search last (s)').grid(row=1,column=2,sticky='w')
+        ttk.Entry(f2,textvariable=self.xdf_anchor_last_s,width=10).grid(row=1,column=3,sticky='w',padx=6)
+        ttk.Label(f2,text='Manual t_opt (s)').grid(row=1,column=4,sticky='w')
+        ttk.Entry(f2,textvariable=self.manual_t_opt,width=12).grid(row=1,column=5,sticky='w',padx=6)
+        ttk.Label(f2,text='Feature extraction is marker-based in a separate window.').grid(row=2,column=0,columnspan=6,sticky='w')
+        b=ttk.Frame(f2); b.grid(row=3,column=0,columnspan=6,sticky='w',pady=6)
         self.btn_align=ttk.Button(b,text='Run Alignment',command=self.run_align_btn); self.btn_align.pack(side='left',padx=(0,8))
         self.btn_clean=ttk.Button(b,text='Run Cleaning',command=self.run_clean_btn); self.btn_clean.pack(side='left',padx=(0,8))
         self.btn_feature=ttk.Button(b,text='Open Feature GUI',command=self.open_feature_gui); self.btn_feature.pack(side='left',padx=(0,8))
         self.btn_all=ttk.Button(b,text='Run Full Pipeline (Align+Clean)',command=self.run_all); self.btn_all.pack(side='left')
-        ttk.Label(f2,text='Aligned CSV').grid(row=3,column=0,sticky='w'); ttk.Entry(f2,textvariable=self.aligned,width=95).grid(row=3,column=1,columnspan=5,sticky='we',padx=6)
-        ttk.Label(f2,text='Cleaned CSV').grid(row=4,column=0,sticky='w'); ttk.Entry(f2,textvariable=self.cleaned,width=95).grid(row=4,column=1,columnspan=5,sticky='we',padx=6)
+        ttk.Label(f2,text='Aligned CSV').grid(row=4,column=0,sticky='w'); ttk.Entry(f2,textvariable=self.aligned,width=95).grid(row=4,column=1,columnspan=5,sticky='we',padx=6)
+        ttk.Label(f2,text='Cleaned CSV').grid(row=5,column=0,sticky='w'); ttk.Entry(f2,textvariable=self.cleaned,width=95).grid(row=5,column=1,columnspan=5,sticky='we',padx=6)
         f3=ttk.LabelFrame(m,text='3) Visualizers',padding=8); f3.pack(fill='x',pady=4)
         ttk.Label(f3,text='CSV').grid(row=0,column=0,sticky='w'); ttk.Entry(f3,textvariable=self.csv,width=95).grid(row=0,column=1,sticky='we',padx=6); ttk.Button(f3,text='Browse',command=self.pick_csv).grid(row=0,column=2)
         ttk.Button(f3,text='Load CSV Columns',command=self.load_cols).grid(row=1,column=1,sticky='w',pady=4)
@@ -268,48 +282,63 @@ class App:
         if xr.shape[1]==2: xr.columns=['ECG','RSP']
         elif xr.shape[1]>=3: xr.columns=['RSP','EDA','ECG']+[f'XDF_{i}' for i in range(3,xr.shape[1])]
         else: xr.columns=['ECG']
-        xa=None; xc=None; aa=None; ac=None; t_opt=None
-        # Primary strategy: align by onset of last sustained flatline on same channel.
-        chan_pref=[c for c in ['ECG','RSP','EDA'] if c in xr.columns and c in adf.columns]
-        chan_pref += [c for c in xr.columns if c in adf.columns and c not in chan_pref]
-        for c in chan_pref:
-            xi=self._flat_end_anchor_idx(xr[c].values, xsr)
-            ai=self._flat_end_anchor_idx(adf[c].values, asr)
-            if xi is not None and ai is not None:
-                xa=float(xt0[xi]); xc=c; aa=float(ai/asr); ac=c; t_opt=aa-xa
-                self.set(f"Alignment anchors (end-flatline): XDF {xc}@{xa:.3f}s, ACQ {ac}@{aa:.3f}s")
-                break
+        xa=None; xc=None; aa=None; ac=None; t_opt=None; align_used=''
+        mode=(self.align_mode.get() or 'auto_flatline').strip().lower()
+        last_s=max(0.0,float(self.xdf_anchor_last_s.get()))
+        xdf_total=float(xt0[-1])
+        x_start=max(0.0, xdf_total-last_s)
+        x_start_i=int(np.searchsorted(xt0, x_start, side='left'))
+        acq_end=float((len(adf)-1)/asr) if len(adf)>1 else 0.0
+        xdf_end=float(xt0[-1]) if len(xt0)>0 else 0.0
+        t_end_to_end=acq_end-xdf_end
 
-        # Fallback: maximize overlap across multiple flatline candidates.
-        total=float(xt0[-1]); acq_dur=float((len(adf)-1)/asr) if len(adf)>1 else 0.0
-        if t_opt is None:
-            xscan=[k for k in ['ECG','RSP','EDA'] if k in xr.columns]+[k for k in xr.columns if k not in ['ECG','RSP','EDA']]
-            xhits=[]
-            for c in xscan:
-                ids=self._flat_idxs(xr[c].values, xsr)
-                for i in ids: xhits.append((float(xt0[i]),c,i))
-            if not xhits: raise RuntimeError('No flatline found in XDF physio stream.')
-            order=[c for c in ['ECG','RSP','EDA'] if c in adf.columns]+[c for c in adf.columns if c not in ['ECG','RSP','EDA']]
-            ahits=[]
-            for c in order:
-                ids=self._flat_idxs(adf[c].values, asr)
-                for i in ids: ahits.append((float(i/asr),c,i))
-            if not ahits: raise RuntimeError('No flatline found in ACQ.')
-            best=None
-            for xt_anchor,xcand,_ in xhits:
-                for at_anchor,acand,_ in ahits:
-                    t=at_anchor-xt_anchor
-                    overlap=max(0.0, min(acq_dur, t+total)-max(0.0,t))
-                    score=(overlap, -abs(t))
-                    if (best is None) or (score>best[0]):
-                        best=(score, xt_anchor, xcand, at_anchor, acand, t, overlap)
-            _, xa, xc, aa, ac, t_opt, best_overlap = best
-            self.set(f"Alignment anchors (fallback): XDF {xc}@{xa:.3f}s, ACQ {ac}@{aa:.3f}s, overlap {best_overlap/60:.2f} min")
+        if mode=='manual_offset':
+            # End-referenced manual control:
+            # t_opt = end_to_end_offset + manual_delta
+            # manual_delta lets user fine-tune around ACQ-end -> XDF-end alignment.
+            manual_delta=float(self.manual_t_opt.get())
+            t_opt=t_end_to_end+manual_delta
+            align_used='manual_offset_end_ref'
+            self.set(
+                f'Alignment mode: manual_offset(end-ref), '
+                f'end_to_end={t_end_to_end:.3f}s, manual_delta={manual_delta:.3f}s, t_opt={t_opt:.3f}s'
+            )
+        elif mode=='end_to_end':
+            t_opt=t_end_to_end
+            align_used='end_to_end'
+            self.set(f'Alignment mode: end_to_end, ACQ end {acq_end:.3f}s -> XDF end {xdf_end:.3f}s')
+        elif mode=='auto_flatline':
+            # Flatline anchors, but XDF search is restricted to the last N seconds.
+            chan_pref=[c for c in ['ECG','RSP','EDA'] if c in xr.columns and c in adf.columns]
+            chan_pref += [c for c in xr.columns if c in adf.columns and c not in chan_pref]
+            for c in chan_pref:
+                xseg=xr[c].values[x_start_i:]
+                xi_local=self._flat_end_anchor_idx(xseg, xsr)
+                ai=self._flat_end_anchor_idx(adf[c].values, asr)
+                if xi_local is not None and ai is not None:
+                    xi=x_start_i+int(xi_local)
+                    xa=float(xt0[xi]); xc=c; aa=float(ai/asr); ac=c; t_opt=aa-xa
+                    align_used='auto_flatline'
+                    self.set(f"Alignment anchors (last-{last_s:.0f}s end-flatline): XDF {xc}@{xa:.3f}s, ACQ {ac}@{aa:.3f}s")
+                    break
 
-        at=np.arange(len(adf),dtype=float)/asr; ash=at-t_opt; si=int(np.sum(ash<0)); ei=int(np.sum(ash<total))
-        if ei<=si+2: raise RuntimeError('After trim ACQ too short.')
-        trim=adf.iloc[si:ei].copy(); at_abs=ash[si:ei]+float(xt[0]); out=pd.DataFrame({'time':at_abs})
-        for c in trim.columns: out[f'ACQ_{self._clean(c)}']=trim[c].values
+            # Fallback when flatline anchoring is not usable.
+            if t_opt is None:
+                t_opt=t_end_to_end
+                align_used='end_to_end_fallback'
+                self.set(f'Alignment fallback: end_to_end, ACQ end {acq_end:.3f}s -> XDF end {xdf_end:.3f}s')
+        else:
+            raise RuntimeError("Unknown alignment mode. Use auto_flatline, end_to_end, or manual_offset.")
+
+        # Keep full ACQ timeline after chosen alignment offset.
+        at=np.arange(len(adf),dtype=float)/asr
+        at_abs=(at-t_opt)+float(xt[0])
+        out=pd.DataFrame({'time':at_abs})
+        for c in adf.columns: out[f'ACQ_{self._clean(c)}']=adf[c].values
+        # Drop early ACQ lead-in before XDF start.
+        out=out[out['time']>=float(xt[0])].reset_index(drop=True)
+        if len(out)<3:
+            raise RuntimeError('After start-time trim, aligned ACQ is too short. Check alignment mode/offset.')
         if self.include.get():
             base=out['time'].values.astype(float); t0=float(base[0]); t1=float(base[-1]); tol=self.tol.get()
             total_streams=max(1,len(meta))
@@ -350,6 +379,7 @@ class App:
                     for j,cn in enumerate(cols): d[cn]=ys[:,j]
                     out=pd.merge_asof(out.sort_values('time'),d.sort_values('time'),on='time',direction='nearest',tolerance=tol)
             out=out.sort_values('time').reset_index(drop=True)
+        self.set(f'Alignment final: method={align_used}, t_opt={float(t_opt):.3f}s, rows={len(out)}')
         self.set_progress(95,'Alignment: finalizing output...')
         out['timestamp']=out['time']; out['time_sec']=out['time']-float(out['time'].iloc[0])
         op=self.aln/f"{self._clean(Path(a).stem+'__'+Path(x).stem)}_aligned_dropout_merged.csv"; out.to_csv(op,index=False); return op
@@ -385,7 +415,12 @@ class App:
             x=df[eda].to_numpy(float).copy(); x[(x>40)|(x<5)]=np.nan; d1=np.gradient(x); d2=np.gradient(d1); x[np.abs(d1)>0.5]=np.nan; x[np.abs(d2)>0.5]=np.nan
             f=pd.Series(x).interpolate(method='linear',limit_direction='both').to_numpy(float); n=len(f); w=min(2001,n if n%2==1 else n-1); df['EDA_clean']=f if w<5 else savgol_filter(f,window_length=w,polyorder=3)
         self.set_progress(95,'Cleaning: writing output...')
-        op=self.cln/Path(p).name; df.to_csv(op,index=False); return op
+        stem=Path(p).stem
+        if stem.lower().endswith('_cleaned'):
+            out_name=f'{stem}.csv'
+        else:
+            out_name=f'{stem}_cleaned.csv'
+        op=self.cln/out_name; df.to_csv(op,index=False); return op
 
     def open_feature_gui(self):
         cpath=self.cleaned.get().strip()
