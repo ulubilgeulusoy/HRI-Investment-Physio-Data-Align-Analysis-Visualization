@@ -17,8 +17,7 @@ class App:
         self.acq=tk.StringVar(); self.xdf=tk.StringVar(); self.aligned=tk.StringVar(); self.cleaned=tk.StringVar(); self.csv=tk.StringVar(); self.status=tk.StringVar(value='Ready.')
         self.progress=tk.DoubleVar(value=0.0); self.progress_text=tk.StringVar(value='0%')
         self.flat_win=tk.DoubleVar(value=2.0); self.flat_rel=tk.DoubleVar(value=0.02); self.tol=tk.DoubleVar(value=0.05); self.include=tk.BooleanVar(value=True)
-        self.align_mode=tk.StringVar(value='auto_flatline'); self.manual_t_opt=tk.DoubleVar(value=0.0); self.xdf_anchor_last_s=tk.DoubleVar(value=60.0)
-        self.align_channel=tk.StringVar(value='auto_shared')
+        self.align_mode=tk.StringVar(value='auto'); self.manual_t_opt=tk.DoubleVar(value=0.0)
         self.scope=tk.StringVar(value='all'); self.xcol=tk.StringVar(); self.ycol=tk.StringVar(); self.mcol=tk.StringVar(); self.mstart=tk.StringVar(); self.mend=tk.StringVar()
         self.ov_csv_col=tk.StringVar(); self.ov_stream=tk.StringVar(); self.ov_xdf_col=tk.StringVar()
         self.ov_streams=[]; self.ov_stream_map={}
@@ -58,31 +57,19 @@ class App:
             textvariable=self.align_mode,
             state='readonly',
             width=20,
-            values=['auto_flatline','end_to_end','manual_offset']
+            values=['auto','manual']
         )
         self.align_mode_cb.grid(row=1,column=1,sticky='w',padx=6)
-        ttk.Label(f2,text='XDF anchor search last (s)').grid(row=1,column=2,sticky='w')
-        ttk.Entry(f2,textvariable=self.xdf_anchor_last_s,width=10).grid(row=1,column=3,sticky='w',padx=6)
-        ttk.Label(f2,text='Manual t_opt (s)').grid(row=1,column=4,sticky='w')
-        ttk.Entry(f2,textvariable=self.manual_t_opt,width=12).grid(row=1,column=5,sticky='w',padx=6)
-        ttk.Label(f2,text='Align channel').grid(row=2,column=0,sticky='w')
-        self.align_channel_cb=ttk.Combobox(
-            f2,
-            textvariable=self.align_channel,
-            state='readonly',
-            width=20,
-            values=['auto_shared']
-        )
-        self.align_channel_cb.grid(row=2,column=1,sticky='w',padx=6)
-        ttk.Button(f2,text='Load Align Options',command=self.load_align_options_btn).grid(row=2,column=2,sticky='w',padx=(6,0))
-        ttk.Label(f2,text='Feature extraction is marker-based in a separate window.').grid(row=3,column=0,columnspan=6,sticky='w')
-        b=ttk.Frame(f2); b.grid(row=4,column=0,columnspan=6,sticky='w',pady=6)
+        ttk.Label(f2,text='Manual t_opt (s)').grid(row=1,column=2,sticky='w')
+        ttk.Entry(f2,textvariable=self.manual_t_opt,width=12).grid(row=1,column=3,sticky='w',padx=6)
+        ttk.Label(f2,text='Feature extraction is marker-based in a separate window.').grid(row=2,column=0,columnspan=6,sticky='w')
+        b=ttk.Frame(f2); b.grid(row=3,column=0,columnspan=6,sticky='w',pady=6)
         self.btn_align=ttk.Button(b,text='Run Alignment',command=self.run_align_btn); self.btn_align.pack(side='left',padx=(0,8))
         self.btn_clean=ttk.Button(b,text='Run Cleaning',command=self.run_clean_btn); self.btn_clean.pack(side='left',padx=(0,8))
         self.btn_feature=ttk.Button(b,text='Open Feature GUI',command=self.open_feature_gui); self.btn_feature.pack(side='left',padx=(0,8))
         self.btn_all=ttk.Button(b,text='Run Full Pipeline (Align+Clean)',command=self.run_all); self.btn_all.pack(side='left')
-        ttk.Label(f2,text='Aligned CSV').grid(row=5,column=0,sticky='w'); ttk.Entry(f2,textvariable=self.aligned,width=95).grid(row=5,column=1,columnspan=5,sticky='we',padx=6)
-        ttk.Label(f2,text='Cleaned CSV').grid(row=6,column=0,sticky='w'); ttk.Entry(f2,textvariable=self.cleaned,width=95).grid(row=6,column=1,columnspan=5,sticky='we',padx=6)
+        ttk.Label(f2,text='Aligned CSV').grid(row=4,column=0,sticky='w'); ttk.Entry(f2,textvariable=self.aligned,width=95).grid(row=4,column=1,columnspan=5,sticky='we',padx=6)
+        ttk.Label(f2,text='Cleaned CSV').grid(row=5,column=0,sticky='w'); ttk.Entry(f2,textvariable=self.cleaned,width=95).grid(row=5,column=1,columnspan=5,sticky='we',padx=6)
         f3=ttk.LabelFrame(m,text='3) Visualizers',padding=8); f3.pack(fill='x',pady=4)
         ttk.Label(f3,text='CSV').grid(row=0,column=0,sticky='w'); ttk.Entry(f3,textvariable=self.csv,width=95).grid(row=0,column=1,sticky='we',padx=6); ttk.Button(f3,text='Browse',command=self.pick_csv).grid(row=0,column=2)
         ttk.Button(f3,text='Load CSV Columns',command=self.load_cols).grid(row=1,column=1,sticky='w',pady=4)
@@ -238,100 +225,6 @@ class App:
             return int(runs[-2][0])
         return int(runs[-1][0])
 
-    def _last_active_before_tail_flatline_idx(self, sig, sr, min_tail_s=3.0):
-        """Return last active sample before sustained flatline in the given segment."""
-        x=np.asarray(sig,float); w=max(1,int(round(self.flat_win.get()*sr)))
-        if len(x)<w+2:
-            return None
-        thr=max(1e-4,self.flat_rel.get()*float(np.std(x)))
-        c1=np.cumsum(x); c2=np.cumsum(x*x)
-        m=(c1[w:]-c1[:-w])/w; v=(c2[w:]-c2[:-w])/w-m*m; v[v<0]=0; s=np.sqrt(v)
-        ok=(s<thr)
-        if not np.any(ok):
-            return None
-        min_run=max(1,int(round(min_tail_s*sr/w)))
-        idx=np.where(ok)[0]
-        runs=[]; rs=idx[0]; prev=idx[0]
-        for k in idx[1:]:
-            if int(k)==int(prev)+1:
-                prev=k
-            else:
-                runs.append((int(rs),int(prev))); rs=k; prev=k
-        runs.append((int(rs),int(prev)))
-        runs=[r for r in runs if (r[1]-r[0]+1)>=min_run]
-        if not runs:
-            return None
-        # Choose the last sustained flat run in this segment.
-        rs,_=runs[-1]
-        flat_start=max(0, min(len(x)-1, int(rs)+w-1))
-        return max(0, flat_start-1)
-
-    def _update_align_channel_options(self, acq_cols, xdf_cols):
-        pref=[c for c in ['ECG','RSP','EDA'] if c in acq_cols and c in xdf_cols]
-        rest=sorted([c for c in xdf_cols if c in acq_cols and c not in pref])
-        vals=['auto_shared'] + pref + rest
-        self.align_channel_cb.configure(values=vals)
-        if self.align_channel.get() not in vals:
-            self.align_channel.set('auto_shared')
-
-    def populate_align_channels_from_files(self):
-        a=self.acq.get().strip(); x=self.xdf.get().strip()
-        if not (os.path.isfile(a) and os.path.isfile(x)):
-            return
-        try:
-            adf,_=nk.read_acqknowledge(a)
-            adf=adf.rename(columns={'RSP, X, RSPEC-R':'RSP','RSP, Y, RSPEC-R':'RSP','EDA, X, PPGED-R':'EDA','EDA, Y, PPGED-R':'EDA','ECG, X, RSPEC-R':'ECG','ECG, Y, RSPEC-R':'ECG','DTU100 - Trigger View, AMI / HLT - A11':'TRIG'})
-            streams,_=pyxdf.load_xdf(x, dejitter_timestamps=False)
-            meta=[]
-            for i,st in enumerate(streams):
-                info=st['info']
-                meta.append((i,info.get('name',[''])[0],info.get('type',[''])[0],int(info.get('channel_count',['0'])[0]),float(info.get('nominal_srate',['0'])[0] or 0.0)))
-            if not meta:
-                return
-            pi=self._phys_best(streams, meta)
-            if pi is None:
-                return
-            xr=pd.DataFrame(streams[pi]['time_series'])
-            if xr.shape[1]==2: xr.columns=['ECG','RSP']
-            elif xr.shape[1]>=3: xr.columns=['RSP','EDA','ECG']+[f'XDF_{i}' for i in range(3,xr.shape[1])]
-            else: xr.columns=['ECG']
-            self._update_align_channel_options(set(adf.columns), set(xr.columns))
-        except Exception:
-            # Keep UI usable even if quick pre-load fails on unusual files.
-            self.align_channel_cb.configure(values=['auto_shared'])
-            self.align_channel.set('auto_shared')
-
-    def load_align_options_btn(self):
-        a=self.acq.get().strip(); x=self.xdf.get().strip()
-        if not (os.path.isfile(a) and os.path.isfile(x)):
-            return messagebox.showerror('Align Options','Select valid ACQ and XDF first.')
-        def task():
-            self.set_progress(10,'Align options: loading ACQ...')
-            adf,_=nk.read_acqknowledge(a)
-            adf=adf.rename(columns={'RSP, X, RSPEC-R':'RSP','RSP, Y, RSPEC-R':'RSP','EDA, X, PPGED-R':'EDA','EDA, Y, PPGED-R':'EDA','ECG, X, RSPEC-R':'ECG','ECG, Y, RSPEC-R':'ECG','DTU100 - Trigger View, AMI / HLT - A11':'TRIG'})
-            self.set_progress(45,'Align options: loading XDF...')
-            streams,_=pyxdf.load_xdf(x, dejitter_timestamps=False)
-            meta=[]
-            for i,st in enumerate(streams):
-                info=st['info']
-                meta.append((i,info.get('name',[''])[0],info.get('type',[''])[0],int(info.get('channel_count',['0'])[0]),float(info.get('nominal_srate',['0'])[0] or 0.0)))
-            if not meta:
-                raise RuntimeError('No streams in XDF.')
-            pi=self._phys_best(streams, meta)
-            if pi is None:
-                raise RuntimeError('Could not select a physio XDF stream.')
-            self.set_progress(75,'Align options: parsing shared channels...')
-            xr=pd.DataFrame(streams[pi]['time_series'])
-            if xr.shape[1]==2: xr.columns=['ECG','RSP']
-            elif xr.shape[1]>=3: xr.columns=['RSP','EDA','ECG']+[f'XDF_{i}' for i in range(3,xr.shape[1])]
-            else: xr.columns=['ECG']
-            return (set(adf.columns), set(xr.columns))
-        def ok(res):
-            acq_cols,xdf_cols=res
-            self._update_align_channel_options(acq_cols, xdf_cols)
-            self.set_progress(100,'Align options loaded.')
-        self._bg(task, ok, 'Load Align Options')
-
     def _clean(self,s):
         s=str(s).strip().replace(' ','_'); s=''.join(ch for ch in s if ch.isalnum() or ch in ['_','-']); return s or 'ch'
 
@@ -387,64 +280,63 @@ class App:
         if xr.shape[1]==2: xr.columns=['ECG','RSP']
         elif xr.shape[1]>=3: xr.columns=['RSP','EDA','ECG']+[f'XDF_{i}' for i in range(3,xr.shape[1])]
         else: xr.columns=['ECG']
-        self._update_align_channel_options(set(adf.columns), set(xr.columns))
         xa=None; xc=None; aa=None; ac=None; t_opt=None; align_used=''
-        mode=(self.align_mode.get() or 'auto_flatline').strip().lower()
-        last_s=max(0.0,float(self.xdf_anchor_last_s.get()))
-        xdf_total=float(xt0[-1])
-        x_start=max(0.0, xdf_total-last_s)
-        x_start_i=int(np.searchsorted(xt0, x_start, side='left'))
+        mode=(self.align_mode.get() or 'auto').strip().lower()
         acq_end=float((len(adf)-1)/asr) if len(adf)>1 else 0.0
         xdf_end=float(xt0[-1]) if len(xt0)>0 else 0.0
         t_end_to_end=acq_end-xdf_end
-        a_start=max(0.0, acq_end-last_s)
-        a_start_i=max(0, int(np.floor(a_start*asr)))
 
-        if mode=='manual_offset':
+        if mode=='manual':
             # End-referenced manual control:
             # t_opt = end_to_end_offset + manual_delta
             # manual_delta lets user fine-tune around ACQ-end -> XDF-end alignment.
             manual_delta=float(self.manual_t_opt.get())
             t_opt=t_end_to_end+manual_delta
-            align_used='manual_offset_end_ref'
+            align_used='manual_end_ref'
             self.set(
-                f'Alignment mode: manual_offset(end-ref), '
+                f'Alignment mode: manual(end-ref), '
                 f'end_to_end={t_end_to_end:.3f}s, manual_delta={manual_delta:.3f}s, t_opt={t_opt:.3f}s'
             )
-        elif mode=='end_to_end':
-            t_opt=t_end_to_end
-            align_used='end_to_end'
-            self.set(f'Alignment mode: end_to_end, ACQ end {acq_end:.3f}s -> XDF end {xdf_end:.3f}s')
-        elif mode=='auto_flatline':
-            # Match the last active point right before tail flatline (XDF tail search restricted to last N seconds).
-            chosen=(self.align_channel.get() or 'auto_shared').strip()
-            if chosen=='auto_shared':
-                chan_pref=[c for c in ['ECG','RSP','EDA'] if c in xr.columns and c in adf.columns]
-                chan_pref += [c for c in xr.columns if c in adf.columns and c not in chan_pref]
-            else:
-                chan_pref=[chosen] if (chosen in xr.columns and chosen in adf.columns) else []
-                if not chan_pref:
-                    raise RuntimeError(f"Selected align channel '{chosen}' is not shared between ACQ and XDF.")
+        elif mode=='auto':
+            # Main-branch behavior: end-flatline on same channel, fallback to overlap-maximizing candidates.
+            chan_pref=[c for c in ['ECG','RSP','EDA'] if c in xr.columns and c in adf.columns]
+            chan_pref += [c for c in xr.columns if c in adf.columns and c not in chan_pref]
             for c in chan_pref:
-                xseg=xr[c].values[x_start_i:]
-                aseg=adf[c].values[a_start_i:]
-                xi_local=self._last_active_before_tail_flatline_idx(xseg, xsr)
-                ai=self._last_active_before_tail_flatline_idx(aseg, asr)
-                if xi_local is not None and ai is not None:
-                    xi=x_start_i+int(xi_local)
-                    ai_abs=a_start_i+int(ai)
-                    xa=float(xt0[xi]); xc=c; aa=float(ai_abs/asr); ac=c; t_opt=aa-xa
-                    align_used='auto_last_active_before_flatline'
-                    self.set(f"Alignment anchors (last-{last_s:.0f}s tail): XDF {xc} last-active@{xa:.3f}s, ACQ {ac} last-active@{aa:.3f}s")
+                xi=self._flat_end_anchor_idx(xr[c].values, xsr)
+                ai=self._flat_end_anchor_idx(adf[c].values, asr)
+                if xi is not None and ai is not None:
+                    xa=float(xt0[xi]); xc=c; aa=float(ai/asr); ac=c; t_opt=aa-xa
+                    align_used='auto_end_flatline'
+                    self.set(f"Alignment anchors (end-flatline): XDF {xc}@{xa:.3f}s, ACQ {ac}@{aa:.3f}s")
                     break
 
-            # Fallback when flatline anchoring is not usable.
             if t_opt is None:
-                t_opt=t_end_to_end
-                align_used='end_to_end_fallback'
-                self.set(f'Alignment fallback: end_to_end, ACQ end {acq_end:.3f}s -> XDF end {xdf_end:.3f}s')
+                total=float(xt0[-1]); acq_dur=acq_end
+                xscan=[k for k in ['ECG','RSP','EDA'] if k in xr.columns]+[k for k in xr.columns if k not in ['ECG','RSP','EDA']]
+                xhits=[]
+                for c in xscan:
+                    ids=self._flat_idxs(xr[c].values, xsr)
+                    for i in ids: xhits.append((float(xt0[i]),c,i))
+                if not xhits: raise RuntimeError('No flatline found in XDF physio stream.')
+                order=[c for c in ['ECG','RSP','EDA'] if c in adf.columns]+[c for c in adf.columns if c not in ['ECG','RSP','EDA']]
+                ahits=[]
+                for c in order:
+                    ids=self._flat_idxs(adf[c].values, asr)
+                    for i in ids: ahits.append((float(i/asr),c,i))
+                if not ahits: raise RuntimeError('No flatline found in ACQ.')
+                best=None
+                for xt_anchor,xcand,_ in xhits:
+                    for at_anchor,acand,_ in ahits:
+                        t=at_anchor-xt_anchor
+                        overlap=max(0.0, min(acq_dur, t+total)-max(0.0,t))
+                        score=(overlap, -abs(t))
+                        if (best is None) or (score>best[0]):
+                            best=(score, xt_anchor, xcand, at_anchor, acand, t, overlap)
+                _, xa, xc, aa, ac, t_opt, ov = best
+                align_used='auto_overlap_fallback'
+                self.set(f"Alignment fallback(best overlap): XDF {xc}@{xa:.3f}s, ACQ {ac}@{aa:.3f}s, overlap={ov:.2f}s")
         else:
-            raise RuntimeError("Unknown alignment mode. Use auto_flatline, end_to_end, or manual_offset.")
+            raise RuntimeError("Unknown alignment mode. Use auto or manual.")
 
         # Keep full ACQ timeline after chosen alignment offset.
         at=np.arange(len(adf),dtype=float)/asr
