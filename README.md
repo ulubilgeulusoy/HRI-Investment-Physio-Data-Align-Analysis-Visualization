@@ -2,7 +2,7 @@
 
 This repository contains a complete physiological data pipeline for:
 
-1. Aligning BIOPAC `.acq` and LSL/XDF `.xdf` recordings
+1. Aligning BIOPAC `.acq` and LSL/XDF `.xdf` recordings by using the flatline signals at the end of recordings. Note: To be able to have this signal, you need to turn off the Bionomadix transmitter before you stop and save recordings.
 2. Cleaning ECG/RSP/EDA channels
 3. Computing marker-based HR, HRV, and respiration features
 4. Visual quality checks and plotting
@@ -40,7 +40,7 @@ python -m venv .venv
 pip install numpy pandas neurokit2 pyxdf scipy matplotlib
 ```
 
-## Unified GUI (Recommended)
+## Unified GUI 
 
 Launch:
 
@@ -73,6 +73,8 @@ Startup behavior:
 3. **Visualizers**
    - Load any CSV, then plot X-Y or scatter
    - Optional marker-based scope (`Between markers`)
+
+3. **Overlay/Alignment Check**
    - Overlay is in a separate configurable section (BIOPAC-only):
      - Click `Load Overlay Options`
      - Choose BIOPAC-relevant CSV signal (`ECG/RSP/EDA` variants), BIOPAC-like XDF stream, and BIOPAC XDF signal
