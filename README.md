@@ -1,32 +1,25 @@
-﻿# HRI Investment Physio Data Align / Analysis / Visualization
+# HRI Investment Physio Data Align / Analysis / Visualization
 
-This repository contains a complete physiological data pipeline for:
+This `main` branch contains the unified GUI-based pipeline for:
 
-1. Aligning BIOPAC `.acq` and LSL/XDF `.xdf` recordings by using the flatline signals at the end of recordings. Note: To be able to have this signal, you need to turn off the Bionomadix transmitter before you stop and save recordings.
+1. Aligning BIOPAC `.acq` and LSL/XDF `.xdf` recordings (dropout/flatline based)
 2. Cleaning ECG/RSP/EDA channels
 3. Computing marker-based HR, HRV, and respiration features
-4. Visual quality checks and plotting
+4. Visual quality checks and overlay plotting
 
-You can run this either from the new unified GUI (`pipeline_gui.py`) or from individual scripts.
+**Note:** To ensure a flatline signal appears at the end of your recordings, turn off the Bionomadix transmitter before stopping and saving the data.
 
-## Folder Structure
+## Repository Contents (main)
 
-- `raw_xdf_acq_Data/`:
-  - Raw `.acq` and `.xdf` files imported/copied from the GUI
-- `aligned_Data/`:
-  - Alignment outputs (merged CSV after ACQ/XDF synchronization)
-- `aligned_cleaned_Data/`:
-  - Cleaned CSV outputs (`ECG_clean`, `RSP_clean`, `EDA_clean`)
-- `feature_extracted_Data/`:
-  - HR/HRV/Respiration + emotion metric CSV outputs
+- `pipeline_gui.py`: end-to-end GUI application
+- `README.md`: branch documentation
 
-Main scripts:
+Data/output folders are created automatically by the GUI under the repository root:
 
-- `pipeline_gui.py`: unified end-to-end GUI
-- `align_acq_xdf_dropout_merge_all_xdf.py`: alignment script
-- `clean_physio_csv_folder.py`: signal cleaning script
-- `compute_hr_hrv_resp_windows.py`: feature extraction script
-- `overlay_check_csv_vs_xdf.py`: overlay check utility
+- `raw_xdf_acq_Data/`
+- `aligned_Data/`
+- `aligned_cleaned_Data/`
+- `feature_extracted_Data/`
 
 ## Requirements
 
@@ -40,142 +33,147 @@ python -m venv .venv
 pip install numpy pandas neurokit2 pyxdf scipy matplotlib
 ```
 
-## Unified GUI 
-
-Launch:
+## Run the GUI
 
 ```powershell
 python pipeline_gui.py
 ```
 
 Startup behavior:
-- The GUI opens in a reset/blank state (no auto-filled file paths).
-- Use `Load Latest From Folders` only if you want to auto-populate from repository folders.
-- ACQ/XDF `Browse` dialogs default to `raw_xdf_acq_Data/`.
-- CSV `Browse` defaults to `aligned_cleaned_Data/` (fallback: `aligned_Data/`).
+- GUI opens in a blank/reset state (no auto-filled file paths).
+- `Load Latest From Folders` can populate recent files from repo data folders.
+- ACQ/XDF browse defaults to `raw_xdf_acq_Data/`.
+- CSV browse defaults to `aligned_cleaned_Data/` (fallback: `aligned_Data/`).
 
-### GUI Sections
+## Workflow
 
-1. **Raw import**
-   - Select `.acq` and `.xdf`
-   - Click `Import/Copy Raw Files`
-   - Files are copied into `raw_xdf_acq_Data/`
+1. Select `.acq` and `.xdf` files.
+2. Click `Import/Copy Raw Files`.
+3. Run `Run Alignment` or `Run Full Pipeline (Align+Clean)`.
+4. Open `Open Feature GUI` to compute marker-based features.
+5. Use visualizer and overlay sections for QA.
 
-2. **Pipeline**
-   - `Run Alignment`: creates aligned CSV in `aligned_Data/`
-     - Includes ACQ columns (`ACQ_*`) and XDF streams (`XDF_*`), including the XDF physio stream
-     - Adds `timestamp` and `time_sec` columns in addition to `time`
-   - `Run Cleaning`: creates cleaned CSV in `aligned_cleaned_Data/`
-   - `Open Feature GUI`: opens marker-based feature extraction window
-   - `Run Full Pipeline (Align+Clean)`: runs alignment and cleaning only
-   - A progress bar shows stage/percentage while tasks run, and pipeline buttons are temporarily disabled to prevent duplicate runs.
+## GUI Sections
 
-3. **Visualizers**
-   - Load any CSV, then plot X-Y or scatter
-   - Optional marker-based scope (`Between markers`)
+1. `Raw import`
+- Select/copy raw ACQ + XDF files into repo raw folder.
 
-3. **Overlay/Alignment Check**
-   - Overlay is in a separate configurable section (BIOPAC-only):
-     - Click `Load Overlay Options`
-     - Choose BIOPAC-relevant CSV signal (`ECG/RSP/EDA` variants), BIOPAC-like XDF stream, and BIOPAC XDF signal
-     - Click `Plot Selected Overlay`
-   - `Export Selected Scope CSV`: exports current scoped CSV to `aligned_cleaned_Data/`
-   - Large CSV/XDF loading uses background execution with progress updates, so the GUI remains responsive.
-   - Both main GUI and Feature GUI are vertically scrollable.
+2. `Pipeline`
+- Alignment output written to `aligned_Data/`.
+- Cleaning output written to `aligned_cleaned_Data/`.
+- Feature outputs written to `feature_extracted_Data/`.
+- Progress bar/status messages are shown for long tasks.
 
-### GUI Controls
+3. `Visualizers`
+- Load CSV columns and create X-Y/scatter plots.
+- Optional scope by marker start/end.
+- Export selected scope CSV.
 
-- **Alignment options**:
-  - `Include extra XDF streams (markers/OpenFace/robot states) in aligned CSV`:
-    - ON: aligned CSV includes non-physio XDF streams such as experiment markers, OpenFace outputs, and robot state channels.
-    - OFF: aligned CSV excludes those extra non-physio streams, resulting in a smaller/narrower file focused on core aligned signals.
-  - Advanced alignment thresholds are intentionally fixed in code (not exposed in GUI) for simpler operation.
+4. `Overlay (Configurable)`
+- Load overlay options from selected CSV + XDF.
+- Select CSV signal, XDF stream, XDF signal.
+- Plot selected overlay for alignment QA.
 
-- **Feature extraction approach**:
-  - Feature extraction is marker-based and done in the separate Feature GUI.
-  - When you click `Open Feature GUI`, a small loading window appears first.
-  - The Feature GUI opens only after marker loading completes.
-  - You can:
-    - compute one selected marker segment (`Compute Selected Segment Features`)
-    - compute all detected experiment phases (`Compute Features Automatically for Experiment Phases`)
-    - load prior results (`Load Previously Calculated CSV`)
-  - Feature GUI includes:
-    - progress bar during compute
-    - an in-window `Computed Feature Rows` table
-    - `Load Previously Calculated CSV` button to reload saved feature rows
+## Outputs
 
-## Typical GUI Workflow
+- Alignment: `<acq_stem>__<xdf_stem>_aligned_dropout_merged.csv` in `aligned_Data/`
+- Cleaning: same stem in `aligned_cleaned_Data/`
+- Marker features: `<cleaned_stem>_marker_features.csv` in `feature_extracted_Data/`
 
-1. Open GUI: `python pipeline_gui.py`
-2. Select raw `.acq` and `.xdf`
-3. Click `Import/Copy Raw Files`
-4. Click `Run Full Pipeline (Align+Clean)`
-5. Click `Open Feature GUI`, load cleaned CSV, and compute features for selected marker segments
-6. Review outputs:
-   - `aligned_Data/`
-   - `aligned_cleaned_Data/`
-   - `feature_extracted_Data/`
-7. Use visualizer buttons for QA plots
+## Cleaning
 
-## Script-Only Workflow (Legacy)
+Cleaning is performed by `run_clean()` in `pipeline_gui.py` on the aligned CSV.
 
-If you prefer script-by-script usage:
+Signal/time selection:
+- Time column is chosen from `time`, `Time`, `timestamp`, or `Timestamp`.
+- Sampling rate is estimated as `fs = len(t) / (t[-1] - t[0])`.
+- Source channels are detected with fallbacks:
+  - ECG: `ECG` or `ACQ_ECG`
+  - Respiration: `RSP` or `ACQ_RSP`
+  - EDA: `EDA` or `ACQ_EDA`
 
-1. Alignment:
+ECG cleaning (`ECG_clean`):
+- 4th-order Butterworth high-pass at `1.0 Hz`
+- 4th-order Butterworth low-pass at `100.0 Hz`
+- 2nd-order Butterworth band-stop (`59.0–61.0 Hz`) for line-noise suppression
+- Filtering uses zero-phase `filtfilt` to reduce phase distortion
 
-```powershell
-python align_acq_xdf_dropout_merge_all_xdf.py
-```
+RSP cleaning (`RSP_clean`):
+- 2nd-order Butterworth band-pass at `0.05–3.0 Hz`
+- Also applied with zero-phase `filtfilt`
 
-2. Cleaning:
+EDA cleaning (`EDA_clean`):
+- Values outside `[5, 40]` are set to `NaN`
+- First derivative (`d1`) and second derivative (`d2`) are computed
+- Samples with `|d1| > 0.5` or `|d2| > 0.5` are set to `NaN`
+- Missing points are linearly interpolated (`limit_direction='both'`)
+- Final smoothing uses Savitzky-Golay (`polyorder=3`, `window_length` up to `2001`, auto-adjusted to signal length and odd-window requirement)
 
-```powershell
-python clean_physio_csv_folder.py
-```
+Output behavior:
+- If filename already ends with `_cleaned`, it is not duplicated
+- Otherwise output name appends `_cleaned.csv`
+- File is written to `aligned_cleaned_Data/`
 
-3. Metrics:
+## Features
 
-```powershell
-python compute_hr_hrv_resp_windows.py
-```
+Feature extraction is performed in the `FeatureWindow` path in `pipeline_gui.py`.
+It works on marker/event-delimited segments from cleaned CSV data.
 
-4. Visual checks:
+### Segment selection modes
 
-```powershell
-python overlay_check_csv_vs_xdf.py
-```
+1. `Compute Selected Segment Features`
+- You choose marker column, start marker, end marker, and segment label
+- The segment is sliced between selected marker indices
 
-Note: these legacy scripts use in-file path/config constants, while the GUI handles paths and folder routing automatically.
+2. `Compute Features Automatically for Experiment Phases`
+- Marker columns are scanned for phase-style events
+- Start/end markers are inferred using suffix patterns:
+  - start: `_start`, `_begin`, `onset`
+  - end: `_end`, `_end_auto`, `_stop`, `offset`
+  - reset handling: `_reset` / `...reset`
+- Phase types are grouped as `briefing`, `baseline`, `trial`
+- Matching start/end pairs produce one feature row per phase segment
 
-## Output Naming and Routing
+### Features computed per segment
 
-- Alignment outputs are generated in `aligned_Data/` with a filename derived from ACQ and XDF stems.
-- Cleaning preserves aligned CSV filename and writes to `aligned_cleaned_Data/`.
-- Metrics preserves cleaned CSV stem and writes `<stem>_metrics_with_emotions.csv` to `feature_extracted_Data/`.
-- Marker-based feature GUI writes/updates `<cleaned_stem>_marker_features.csv` in `feature_extracted_Data/`.
-- Repo `.gitignore` excludes all `.csv`, `.acq`, `.xdf`, and Python cache/bytecode artifacts.
+Base segment metadata:
+- `fs_hz_est`: estimated sampling rate from segment time deltas
+- `n_rows`: number of rows in segment
+- `seg_start_time`, `seg_end_time`
+- `file`, `segment_label`, `marker_col`, `start_marker`, `end_marker`, `start_idx`, `end_idx`
 
-## Troubleshooting
+ECG-derived metrics (from `ECG_clean`, if present):
+- `mean_hr_bpm`: mean heart rate from NeuroKit ECG rate signal
+- `hrv_rmssd_ms`: RMSSD from `nk.hrv_time(...)`
+- `hrv_sdnn_ms`: SDNN from `nk.hrv_time(...)`
+- `n_rpeaks`: number of detected R-peaks
+- Processing uses `nk.ecg_process(..., method='neurokit')`
+- If detection fails or too few peaks exist, values are set to `NaN` (and `n_rpeaks=0`)
 
-- **No flatline found**:
-  - Increase `Flat win(s)` and/or `Flat rel` in GUI alignment controls.
+Respiration-derived metrics (from `RSP_clean`, if present):
+- `mean_resp_bpm`: mean respiration rate from `nk.rsp_process(...)`
+- `n_breaths`: count of detected respiration peaks
+- If processing fails, values default to `NaN` / `0`
 
-- **Overlay loading returns no options**:
-  - Ensure CSV contains BIOPAC signal columns (e.g., `ACQ_ECG`, `ACQ_RSP`, `ACQ_EDA`, `ECG_clean`, `RSP_clean`, `EDA_clean`).
-  - Ensure the XDF contains a BIOPAC/physio stream.
+Emotion summary features (if OpenFace columns exist):
+- Mean value for each of:
+  - `emo_Neutral_pct`
+  - `emo_Happy_pct`
+  - `emo_Sad_pct`
+  - `emo_Surprise_pct`
+  - `emo_Fear_pct`
+  - `emo_Disgust_pct`
+  - `emo_Anger_pct`
+  - `emo_Contempt_pct`
+- Each is computed as a finite-value `nanmean` over the segment
 
-- **No numeric points in plotting**:
-  - Choose numeric X/Y columns and reload CSV columns.
-
-- **Feature row computed but not visible**:
-  - Check the `Computed Feature Rows` table in the Feature GUI.
-  - Use `Load Saved Feature CSV` to reload existing saved rows.
-
-- **Missing package errors**:
-  - Re-check the pip install command in Requirements.
+Feature output file:
+- Saved to `feature_extracted_Data/<cleaned_stem>_marker_features.csv`
+- Selected-segment runs append rows if file already exists
+- Auto-phase runs write the computed table for detected phases
 
 ## Notes
 
 - Alignment is dropout/flatline-anchor based.
-- For irregular XDF streams (nominal srate `0`), nearest-asof merge with tolerance is used.
-- Emotion aggregation uses OpenFace emotion columns when they exist in cleaned/aligned CSV.
+- For irregular XDF streams (`nominal_srate == 0`), nearest-asof merge with tolerance is used.
+- `.gitignore` excludes `.csv`, `.acq`, `.xdf`, and Python cache artifacts.
