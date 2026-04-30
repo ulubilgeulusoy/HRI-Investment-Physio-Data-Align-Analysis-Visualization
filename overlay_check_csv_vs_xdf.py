@@ -6,8 +6,8 @@ import pyxdf
 # =========================
 # EDIT THESE PATHS
 # =========================
-CSV_PATH = r"C:\Users\ulubi\Data Align\alignedData\aligned_dropout_merged.csv"
-XDF_PATH = r"C:\Users\ulubi\Data Align\sub-P001_ses-S001_task-Default_run-001_eeg.xdf"
+CSV_PATH = r"C:\Users\ulubi\Desktop\Data\Data Align\aligned_dropout_merged.csv"
+XDF_PATH = r"C:\Users\ulubi\Desktop\Data\block_ulu_new.xdf"
 
 # If you know the exact XDF stream name, set it (e.g., "Biopac ECG-RSP" or "Biopac Data").
 # If None, the script will auto-pick a likely physio stream.

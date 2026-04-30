@@ -27,8 +27,8 @@ import pyxdf
 # =========================
 # EDIT THESE PATHS
 # =========================
-ACQ_PATH = r"C:\Users\ulubi\Desktop\Data\example.acq"
-XDF_PATH = r"C:\Users\ulubi\Desktop\Data\example.xdf"
+ACQ_PATH = r"C:\Users\ulubi\Desktop\Data\block_ulu_new.acq"
+XDF_PATH = r"C:\Users\ulubi\Desktop\Data\block_ulu_new.xdf"
 OUT_CSV  = r"C:\Users\ulubi\Desktop\Data\Data Align\aligned_dropout_merged.csv"
 
 # =========================
