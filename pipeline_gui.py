@@ -17,6 +17,7 @@ class App:
         self.acq=tk.StringVar(); self.xdf=tk.StringVar(); self.aligned=tk.StringVar(); self.cleaned=tk.StringVar(); self.csv=tk.StringVar(); self.status=tk.StringVar(value='Ready.')
         self.progress=tk.DoubleVar(value=0.0); self.progress_text=tk.StringVar(value='0%')
         self.flat_win=tk.DoubleVar(value=2.0); self.flat_rel=tk.DoubleVar(value=0.02); self.tol=tk.DoubleVar(value=0.05); self.include=tk.BooleanVar(value=True)
+        self.align_mode=tk.StringVar(value='auto'); self.manual_t_opt=tk.DoubleVar(value=0.0)
         self.scope=tk.StringVar(value='all'); self.xcol=tk.StringVar(); self.ycol=tk.StringVar(); self.mcol=tk.StringVar(); self.mstart=tk.StringVar(); self.mend=tk.StringVar()
         self.ov_csv_col=tk.StringVar(); self.ov_stream=tk.StringVar(); self.ov_xdf_col=tk.StringVar()
         self.ov_streams=[]; self.ov_stream_map={}
@@ -50,14 +51,25 @@ class App:
             text='Include extra XDF streams (markers/OpenFace/robot states) in aligned CSV',
             variable=self.include
         ).grid(row=0,column=0,columnspan=6,sticky='w')
-        ttk.Label(f2,text='Feature extraction is marker-based in a separate window.').grid(row=1,column=0,columnspan=6,sticky='w')
-        b=ttk.Frame(f2); b.grid(row=2,column=0,columnspan=6,sticky='w',pady=6)
+        ttk.Label(f2,text='Alignment mode').grid(row=1,column=0,sticky='w')
+        self.align_mode_cb=ttk.Combobox(
+            f2,
+            textvariable=self.align_mode,
+            state='readonly',
+            width=20,
+            values=['auto','manual']
+        )
+        self.align_mode_cb.grid(row=1,column=1,sticky='w',padx=6)
+        ttk.Label(f2,text='Manual t_opt (s)').grid(row=1,column=2,sticky='w')
+        ttk.Entry(f2,textvariable=self.manual_t_opt,width=12).grid(row=1,column=3,sticky='w',padx=6)
+        ttk.Label(f2,text='Feature extraction is marker-based in a separate window.').grid(row=2,column=0,columnspan=6,sticky='w')
+        b=ttk.Frame(f2); b.grid(row=3,column=0,columnspan=6,sticky='w',pady=6)
         self.btn_align=ttk.Button(b,text='Run Alignment',command=self.run_align_btn); self.btn_align.pack(side='left',padx=(0,8))
         self.btn_clean=ttk.Button(b,text='Run Cleaning',command=self.run_clean_btn); self.btn_clean.pack(side='left',padx=(0,8))
         self.btn_feature=ttk.Button(b,text='Open Feature GUI',command=self.open_feature_gui); self.btn_feature.pack(side='left',padx=(0,8))
         self.btn_all=ttk.Button(b,text='Run Full Pipeline (Align+Clean)',command=self.run_all); self.btn_all.pack(side='left')
-        ttk.Label(f2,text='Aligned CSV').grid(row=3,column=0,sticky='w'); ttk.Entry(f2,textvariable=self.aligned,width=95).grid(row=3,column=1,columnspan=5,sticky='we',padx=6)
-        ttk.Label(f2,text='Cleaned CSV').grid(row=4,column=0,sticky='w'); ttk.Entry(f2,textvariable=self.cleaned,width=95).grid(row=4,column=1,columnspan=5,sticky='we',padx=6)
+        ttk.Label(f2,text='Aligned CSV').grid(row=4,column=0,sticky='w'); ttk.Entry(f2,textvariable=self.aligned,width=95).grid(row=4,column=1,columnspan=5,sticky='we',padx=6)
+        ttk.Label(f2,text='Cleaned CSV').grid(row=5,column=0,sticky='w'); ttk.Entry(f2,textvariable=self.cleaned,width=95).grid(row=5,column=1,columnspan=5,sticky='we',padx=6)
         f3=ttk.LabelFrame(m,text='3) Visualizers',padding=8); f3.pack(fill='x',pady=4)
         ttk.Label(f3,text='CSV').grid(row=0,column=0,sticky='w'); ttk.Entry(f3,textvariable=self.csv,width=95).grid(row=0,column=1,sticky='we',padx=6); ttk.Button(f3,text='Browse',command=self.pick_csv).grid(row=0,column=2)
         ttk.Button(f3,text='Load CSV Columns',command=self.load_cols).grid(row=1,column=1,sticky='w',pady=4)
@@ -268,48 +280,73 @@ class App:
         if xr.shape[1]==2: xr.columns=['ECG','RSP']
         elif xr.shape[1]>=3: xr.columns=['RSP','EDA','ECG']+[f'XDF_{i}' for i in range(3,xr.shape[1])]
         else: xr.columns=['ECG']
-        xa=None; xc=None; aa=None; ac=None; t_opt=None
-        # Primary strategy: align by onset of last sustained flatline on same channel.
-        chan_pref=[c for c in ['ECG','RSP','EDA'] if c in xr.columns and c in adf.columns]
-        chan_pref += [c for c in xr.columns if c in adf.columns and c not in chan_pref]
-        for c in chan_pref:
-            xi=self._flat_end_anchor_idx(xr[c].values, xsr)
-            ai=self._flat_end_anchor_idx(adf[c].values, asr)
-            if xi is not None and ai is not None:
-                xa=float(xt0[xi]); xc=c; aa=float(ai/asr); ac=c; t_opt=aa-xa
-                self.set(f"Alignment anchors (end-flatline): XDF {xc}@{xa:.3f}s, ACQ {ac}@{aa:.3f}s")
-                break
+        xa=None; xc=None; aa=None; ac=None; t_opt=None; align_used=''
+        mode=(self.align_mode.get() or 'auto').strip().lower()
+        acq_end=float((len(adf)-1)/asr) if len(adf)>1 else 0.0
+        xdf_end=float(xt0[-1]) if len(xt0)>0 else 0.0
+        t_end_to_end=acq_end-xdf_end
 
-        # Fallback: maximize overlap across multiple flatline candidates.
-        total=float(xt0[-1]); acq_dur=float((len(adf)-1)/asr) if len(adf)>1 else 0.0
-        if t_opt is None:
-            xscan=[k for k in ['ECG','RSP','EDA'] if k in xr.columns]+[k for k in xr.columns if k not in ['ECG','RSP','EDA']]
-            xhits=[]
-            for c in xscan:
-                ids=self._flat_idxs(xr[c].values, xsr)
-                for i in ids: xhits.append((float(xt0[i]),c,i))
-            if not xhits: raise RuntimeError('No flatline found in XDF physio stream.')
-            order=[c for c in ['ECG','RSP','EDA'] if c in adf.columns]+[c for c in adf.columns if c not in ['ECG','RSP','EDA']]
-            ahits=[]
-            for c in order:
-                ids=self._flat_idxs(adf[c].values, asr)
-                for i in ids: ahits.append((float(i/asr),c,i))
-            if not ahits: raise RuntimeError('No flatline found in ACQ.')
-            best=None
-            for xt_anchor,xcand,_ in xhits:
-                for at_anchor,acand,_ in ahits:
-                    t=at_anchor-xt_anchor
-                    overlap=max(0.0, min(acq_dur, t+total)-max(0.0,t))
-                    score=(overlap, -abs(t))
-                    if (best is None) or (score>best[0]):
-                        best=(score, xt_anchor, xcand, at_anchor, acand, t, overlap)
-            _, xa, xc, aa, ac, t_opt, best_overlap = best
-            self.set(f"Alignment anchors (fallback): XDF {xc}@{xa:.3f}s, ACQ {ac}@{aa:.3f}s, overlap {best_overlap/60:.2f} min")
+        if mode=='manual':
+            # End-referenced manual control:
+            # t_opt = end_to_end_offset + manual_delta
+            # manual_delta lets user fine-tune around ACQ-end -> XDF-end alignment.
+            manual_delta=float(self.manual_t_opt.get())
+            t_opt=t_end_to_end+manual_delta
+            align_used='manual_end_ref'
+            self.set(
+                f'Alignment mode: manual(end-ref), '
+                f'end_to_end={t_end_to_end:.3f}s, manual_delta={manual_delta:.3f}s, t_opt={t_opt:.3f}s'
+            )
+        elif mode=='auto':
+            # Main-branch behavior: end-flatline on same channel, fallback to overlap-maximizing candidates.
+            chan_pref=[c for c in ['ECG','RSP','EDA'] if c in xr.columns and c in adf.columns]
+            chan_pref += [c for c in xr.columns if c in adf.columns and c not in chan_pref]
+            for c in chan_pref:
+                xi=self._flat_end_anchor_idx(xr[c].values, xsr)
+                ai=self._flat_end_anchor_idx(adf[c].values, asr)
+                if xi is not None and ai is not None:
+                    xa=float(xt0[xi]); xc=c; aa=float(ai/asr); ac=c; t_opt=aa-xa
+                    align_used='auto_end_flatline'
+                    self.set(f"Alignment anchors (end-flatline): XDF {xc}@{xa:.3f}s, ACQ {ac}@{aa:.3f}s")
+                    break
 
-        at=np.arange(len(adf),dtype=float)/asr; ash=at-t_opt; si=int(np.sum(ash<0)); ei=int(np.sum(ash<total))
-        if ei<=si+2: raise RuntimeError('After trim ACQ too short.')
-        trim=adf.iloc[si:ei].copy(); at_abs=ash[si:ei]+float(xt[0]); out=pd.DataFrame({'time':at_abs})
-        for c in trim.columns: out[f'ACQ_{self._clean(c)}']=trim[c].values
+            if t_opt is None:
+                total=float(xt0[-1]); acq_dur=acq_end
+                xscan=[k for k in ['ECG','RSP','EDA'] if k in xr.columns]+[k for k in xr.columns if k not in ['ECG','RSP','EDA']]
+                xhits=[]
+                for c in xscan:
+                    ids=self._flat_idxs(xr[c].values, xsr)
+                    for i in ids: xhits.append((float(xt0[i]),c,i))
+                if not xhits: raise RuntimeError('No flatline found in XDF physio stream.')
+                order=[c for c in ['ECG','RSP','EDA'] if c in adf.columns]+[c for c in adf.columns if c not in ['ECG','RSP','EDA']]
+                ahits=[]
+                for c in order:
+                    ids=self._flat_idxs(adf[c].values, asr)
+                    for i in ids: ahits.append((float(i/asr),c,i))
+                if not ahits: raise RuntimeError('No flatline found in ACQ.')
+                best=None
+                for xt_anchor,xcand,_ in xhits:
+                    for at_anchor,acand,_ in ahits:
+                        t=at_anchor-xt_anchor
+                        overlap=max(0.0, min(acq_dur, t+total)-max(0.0,t))
+                        score=(overlap, -abs(t))
+                        if (best is None) or (score>best[0]):
+                            best=(score, xt_anchor, xcand, at_anchor, acand, t, overlap)
+                _, xa, xc, aa, ac, t_opt, ov = best
+                align_used='auto_overlap_fallback'
+                self.set(f"Alignment fallback(best overlap): XDF {xc}@{xa:.3f}s, ACQ {ac}@{aa:.3f}s, overlap={ov:.2f}s")
+        else:
+            raise RuntimeError("Unknown alignment mode. Use auto or manual.")
+
+        # Keep full ACQ timeline after chosen alignment offset.
+        at=np.arange(len(adf),dtype=float)/asr
+        at_abs=(at-t_opt)+float(xt[0])
+        out=pd.DataFrame({'time':at_abs})
+        for c in adf.columns: out[f'ACQ_{self._clean(c)}']=adf[c].values
+        # Drop early ACQ lead-in before XDF start.
+        out=out[out['time']>=float(xt[0])].reset_index(drop=True)
+        if len(out)<3:
+            raise RuntimeError('After start-time trim, aligned ACQ is too short. Check alignment mode/offset.')
         if self.include.get():
             base=out['time'].values.astype(float); t0=float(base[0]); t1=float(base[-1]); tol=self.tol.get()
             total_streams=max(1,len(meta))
@@ -350,6 +387,7 @@ class App:
                     for j,cn in enumerate(cols): d[cn]=ys[:,j]
                     out=pd.merge_asof(out.sort_values('time'),d.sort_values('time'),on='time',direction='nearest',tolerance=tol)
             out=out.sort_values('time').reset_index(drop=True)
+        self.set(f'Alignment final: method={align_used}, t_opt={float(t_opt):.3f}s, rows={len(out)}')
         self.set_progress(95,'Alignment: finalizing output...')
         out['timestamp']=out['time']; out['time_sec']=out['time']-float(out['time'].iloc[0])
         op=self.aln/f"{self._clean(Path(a).stem+'__'+Path(x).stem)}_aligned_dropout_merged.csv"; out.to_csv(op,index=False); return op
@@ -385,7 +423,12 @@ class App:
             x=df[eda].to_numpy(float).copy(); x[(x>40)|(x<5)]=np.nan; d1=np.gradient(x); d2=np.gradient(d1); x[np.abs(d1)>0.5]=np.nan; x[np.abs(d2)>0.5]=np.nan
             f=pd.Series(x).interpolate(method='linear',limit_direction='both').to_numpy(float); n=len(f); w=min(2001,n if n%2==1 else n-1); df['EDA_clean']=f if w<5 else savgol_filter(f,window_length=w,polyorder=3)
         self.set_progress(95,'Cleaning: writing output...')
-        op=self.cln/Path(p).name; df.to_csv(op,index=False); return op
+        stem=Path(p).stem
+        if stem.lower().endswith('_cleaned'):
+            out_name=f'{stem}.csv'
+        else:
+            out_name=f'{stem}_cleaned.csv'
+        op=self.cln/out_name; df.to_csv(op,index=False); return op
 
     def open_feature_gui(self):
         cpath=self.cleaned.get().strip()
@@ -571,19 +614,29 @@ class App:
             if not (os.path.isfile(cp) and os.path.isfile(xp)): raise RuntimeError('Select valid CSV and XDF.')
             ccol=self.ov_csv_col.get().strip(); scol=self.ov_xdf_col.get().strip(); skey=self.ov_stream.get().strip()
             if not ccol or not scol or not skey: raise RuntimeError('Load options and select CSV signal, XDF stream, and XDF signal.')
-            c=pd.read_csv(cp)
-            if 'time' not in c.columns: raise RuntimeError("Overlay CSV needs 'time' column.")
-            sidx=int(skey.split(':',1)[0])
-            streams,_=pyxdf.load_xdf(xp, dejitter_timestamps=False); st=streams[sidx]
-            xd=pd.DataFrame(np.asarray(st['time_series']))
-            if xd.shape[1]==2: xd.columns=['ECG','RSP']
-            elif xd.shape[1]>=3: xd.columns=['RSP','EDA','ECG']+[f'XDF_{j}' for j in range(3,xd.shape[1])]
-            else: xd.columns=['ECG']
-            if ccol not in c.columns or scol not in xd.columns: raise RuntimeError('Selected signal columns not found.')
-            tc=c['time'].to_numpy(float); xt=np.asarray(st['time_stamps'],float); t0=float(tc[0]); tt=tc-t0; xt=xt-t0
-            o=np.argsort(xt); yi=np.interp(tt,xt[o],pd.to_numeric(xd[scol],errors='coerce').to_numpy(float)[o])
-            plt.figure(figsize=(10,4)); plt.plot(tt,pd.to_numeric(c[ccol],errors='coerce').to_numpy(float),label=f'CSV ({ccol})'); plt.plot(tt,yi,label=f'XDF ({scol}) interpolated',alpha=0.85)
-            plt.title('Selected overlay'); plt.xlabel('Time (s)'); plt.legend(); plt.tight_layout(); plt.show()
+            def task():
+                self.set_progress(10,'Overlay plot: loading CSV...')
+                c=pd.read_csv(cp)
+                if 'time' not in c.columns: raise RuntimeError("Overlay CSV needs 'time' column.")
+                sidx=int(skey.split(':',1)[0])
+                self.set_progress(40,'Overlay plot: loading XDF stream...')
+                streams,_=pyxdf.load_xdf(xp, dejitter_timestamps=False); st=streams[sidx]
+                xd=pd.DataFrame(np.asarray(st['time_series']))
+                if xd.shape[1]==2: xd.columns=['ECG','RSP']
+                elif xd.shape[1]>=3: xd.columns=['RSP','EDA','ECG']+[f'XDF_{j}' for j in range(3,xd.shape[1])]
+                else: xd.columns=['ECG']
+                if ccol not in c.columns or scol not in xd.columns: raise RuntimeError('Selected signal columns not found.')
+                self.set_progress(75,'Overlay plot: preparing interpolation...')
+                tc=c['time'].to_numpy(float); xt=np.asarray(st['time_stamps'],float); t0=float(tc[0]); tt=tc-t0; xt=xt-t0
+                o=np.argsort(xt); yi=np.interp(tt,xt[o],pd.to_numeric(xd[scol],errors='coerce').to_numpy(float)[o])
+                yc=pd.to_numeric(c[ccol],errors='coerce').to_numpy(float)
+                return (tt,yc,yi,ccol,scol)
+            def ok(res):
+                tt,yc,yi,ccol2,scol2=res
+                plt.figure(figsize=(10,4)); plt.plot(tt,yc,label=f'CSV ({ccol2})'); plt.plot(tt,yi,label=f'XDF ({scol2}) interpolated',alpha=0.85)
+                plt.title('Selected overlay'); plt.xlabel('Time (s)'); plt.legend(); plt.tight_layout(); plt.show()
+                self.set_progress(100,'Overlay plot displayed.')
+            self._bg(task, ok, 'Plot Selected Overlay')
         except Exception as e:
             messagebox.showerror('Overlay Error',f'{e}\n\n{traceback.format_exc()}')
 
