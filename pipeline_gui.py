@@ -155,14 +155,14 @@ class App:
         ad=self.raw/Path(a).name; xd=self.raw/Path(x).name; shutil.copy2(a,ad); shutil.copy2(x,xd); self.acq.set(str(ad)); self.xdf.set(str(xd)); self.set('Raw files copied.'); messagebox.showinfo('Imported',f'Copied:\n{ad}\n{xd}')
 
     def _flat_idx(self, sig, sr):
-        x=np.asarray(sig,float); w=max(1,int(round(self.flat_win.get()*sr)))
+        x=np.asarray(sig,float); w=max(1,int(round(self.flat_win.get()*sr))); w=min(w,max(1,len(x)//4))
         if len(x)<w+2: return None
         thr=max(1e-4,self.flat_rel.get()*float(np.std(x))); c1=np.cumsum(x); c2=np.cumsum(x*x)
         m=(c1[w:]-c1[:-w])/w; v=(c2[w:]-c2[:-w])/w-m*m; v[v<0]=0; s=np.sqrt(v); idx=np.where(s<thr)[0]
         return int(idx[0]) if len(idx) else None
 
     def _flat_idxs(self, sig, sr, max_hits=24):
-        x=np.asarray(sig,float); w=max(1,int(round(self.flat_win.get()*sr)))
+        x=np.asarray(sig,float); w=max(1,int(round(self.flat_win.get()*sr))); w=min(w,max(1,len(x)//4))
         if len(x)<w+2: return []
         thr=max(1e-4,self.flat_rel.get()*float(np.std(x))); c1=np.cumsum(x); c2=np.cumsum(x*x)
         m=(c1[w:]-c1[:-w])/w; v=(c2[w:]-c2[:-w])/w-m*m; v[v<0]=0; s=np.sqrt(v); idx=np.where(s<thr)[0]
@@ -179,7 +179,7 @@ class App:
 
     def _flat_end_anchor_idx(self, sig, sr, min_tail_s=3.0):
         """Earliest onset in tail where flatline dominates until end."""
-        x=np.asarray(sig,float); w=max(1,int(round(self.flat_win.get()*sr)))
+        x=np.asarray(sig,float); w=max(1,int(round(self.flat_win.get()*sr))); w=min(w,max(1,len(x)//4))
         if len(x)<w+2: return None
         thr=max(1e-4,self.flat_rel.get()*float(np.std(x))); c1=np.cumsum(x); c2=np.cumsum(x*x)
         m=(c1[w:]-c1[:-w])/w; v=(c2[w:]-c2[:-w])/w-m*m; v[v<0]=0; s=np.sqrt(v)
@@ -225,6 +225,29 @@ class App:
             return int(runs[-2][0])
         return int(runs[-1][0])
 
+    def _safe_xdf_sr(self, xt0, nominal_sr):
+        sr_nom=float(nominal_sr) if nominal_sr is not None else 0.0
+        if sr_nom<=0:
+            sr_nom=None
+        dt=np.diff(np.asarray(xt0,float))
+        dt=dt[np.isfinite(dt) & (dt>0)]
+        sr_est=None
+        if len(dt)>=10:
+            lo,hi=np.quantile(dt,[0.05,0.95])
+            core=dt[(dt>=lo)&(dt<=hi)]
+            if len(core)>=10:
+                med=float(np.median(core))
+                if med>0:
+                    sr_est=float(1.0/med)
+        sr=sr_est if sr_est is not None else sr_nom
+        if sr is None:
+            return None
+        # Physiological safety bounds; fallback to nominal when estimate is implausible.
+        if (sr<10.0 or sr>5000.0) and sr_nom is not None and 10.0<=sr_nom<=5000.0:
+            sr=sr_nom
+        sr=max(10.0,min(5000.0,float(sr)))
+        return sr
+
     def _clean(self,s):
         s=str(s).strip().replace(' ','_'); s=''.join(ch for ch in s if ch.isalnum() or ch in ['_','-']); return s or 'ch'
 
@@ -260,6 +283,7 @@ class App:
             self.aligned.set(str(p)); self.csv.set(str(p)); self.set_progress(100,'Alignment done.'); messagebox.showinfo('Alignment',f'Wrote:\n{p}')
         self._bg(self.run_align, ok, 'Alignment')
     def run_align(self):
+        dbg=[]
         a=self.acq.get().strip(); x=self.xdf.get().strip()
         if not (os.path.isfile(a) and os.path.isfile(x)): raise RuntimeError('Select valid ACQ and XDF first.')
         self.set_progress(5,'Alignment: loading ACQ...'); adf, asr = nk.read_acqknowledge(a); asr=float(asr)
@@ -272,14 +296,17 @@ class App:
         if pi is None:
             raise RuntimeError('Could not select a physio XDF stream.')
         ps=streams[pi]; xr=pd.DataFrame(ps['time_series']); xt=np.asarray(ps['time_stamps'],float); xt0=xt-xt[0]
+        dbg.append(f"Selected physio stream idx={pi}, name='{meta[pi][1]}', type='{meta[pi][2]}', ch={meta[pi][3]}, nominal_sr={meta[pi][4]}")
         if len(xt0)<2:
             raise RuntimeError('Chosen physio XDF stream has too few timestamps.')
-        dt=np.diff(xt0); dt=dt[(dt>0)&(dt<1.0)]; xsr=float(1.0/np.median(dt)) if len(dt) else None
+        xsr=self._safe_xdf_sr(xt0, meta[pi][4])
         if xsr is None: raise RuntimeError('Could not estimate XDF SR.')
+        dbg.append(f"Estimated SR: xdf={xsr:.6f} Hz, acq={asr:.6f} Hz, xdf_dur={float(xt0[-1]):.3f}s, acq_dur={float((len(adf)-1)/asr) if len(adf)>1 else 0.0:.3f}s")
         self.set(f"Alignment: selected physio stream '{meta[pi][1]}' ({meta[pi][2]}), duration {float(xt0[-1]):.1f}s")
         if xr.shape[1]==2: xr.columns=['ECG','RSP']
         elif xr.shape[1]>=3: xr.columns=['RSP','EDA','ECG']+[f'XDF_{i}' for i in range(3,xr.shape[1])]
         else: xr.columns=['ECG']
+        dbg.append(f"Shared channels={ [c for c in xr.columns if c in adf.columns][:20] }")
         xa=None; xc=None; aa=None; ac=None; t_opt=None; align_used=''
         mode=(self.align_mode.get() or 'auto').strip().lower()
         acq_end=float((len(adf)-1)/asr) if len(adf)>1 else 0.0
@@ -304,6 +331,7 @@ class App:
             for c in chan_pref:
                 xi=self._flat_end_anchor_idx(xr[c].values, xsr)
                 ai=self._flat_end_anchor_idx(adf[c].values, asr)
+                dbg.append(f"StageA channel={c}: x_idx={xi}, a_idx={ai}")
                 if xi is not None and ai is not None:
                     xa=float(xt0[xi]); xc=c; aa=float(ai/asr); ac=c; t_opt=aa-xa
                     align_used='auto_end_flatline'
@@ -316,25 +344,32 @@ class App:
                 xhits=[]
                 for c in xscan:
                     ids=self._flat_idxs(xr[c].values, xsr)
+                    dbg.append(f"StageB XDF channel={c}: hits={len(ids)}")
                     for i in ids: xhits.append((float(xt0[i]),c,i))
-                if not xhits: raise RuntimeError('No flatline found in XDF physio stream.')
                 order=[c for c in ['ECG','RSP','EDA'] if c in adf.columns]+[c for c in adf.columns if c not in ['ECG','RSP','EDA']]
                 ahits=[]
                 for c in order:
                     ids=self._flat_idxs(adf[c].values, asr)
+                    dbg.append(f"StageB ACQ channel={c}: hits={len(ids)}")
                     for i in ids: ahits.append((float(i/asr),c,i))
-                if not ahits: raise RuntimeError('No flatline found in ACQ.')
-                best=None
-                for xt_anchor,xcand,_ in xhits:
-                    for at_anchor,acand,_ in ahits:
-                        t=at_anchor-xt_anchor
-                        overlap=max(0.0, min(acq_dur, t+total)-max(0.0,t))
-                        score=(overlap, -abs(t))
-                        if (best is None) or (score>best[0]):
-                            best=(score, xt_anchor, xcand, at_anchor, acand, t, overlap)
-                _, xa, xc, aa, ac, t_opt, ov = best
-                align_used='auto_overlap_fallback'
-                self.set(f"Alignment fallback(best overlap): XDF {xc}@{xa:.3f}s, ACQ {ac}@{aa:.3f}s, overlap={ov:.2f}s")
+                if xhits and ahits:
+                    best=None
+                    for xt_anchor,xcand,_ in xhits:
+                        for at_anchor,acand,_ in ahits:
+                            t=at_anchor-xt_anchor
+                            overlap=max(0.0, min(acq_dur, t+total)-max(0.0,t))
+                            score=(overlap, -abs(t))
+                            if (best is None) or (score>best[0]):
+                                best=(score, xt_anchor, xcand, at_anchor, acand, t, overlap)
+                    _, xa, xc, aa, ac, t_opt, ov = best
+                    align_used='auto_overlap_fallback'
+                    dbg.append(f"StageB selected: ch_x={xc}, ch_a={ac}, xa={xa:.3f}, aa={aa:.3f}, t_opt={t_opt:.3f}, overlap={ov:.3f}")
+                    self.set(f"Alignment fallback(best overlap): XDF {xc}@{xa:.3f}s, ACQ {ac}@{aa:.3f}s, overlap={ov:.2f}s")
+                else:
+                    dbg.append(f"StageB no candidates: xhits={len(xhits)}, ahits={len(ahits)}")
+
+            if t_opt is None:
+                raise RuntimeError('No flatline found in XDF physio stream.\n\nDEBUG:\n' + '\n'.join(dbg[-120:]))
         else:
             raise RuntimeError("Unknown alignment mode. Use auto or manual.")
 
