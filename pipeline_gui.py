@@ -80,10 +80,13 @@ class App:
         self.el=ttk.Label(f3,text='End marker'); self.ec=ttk.Combobox(f3,textvariable=self.mend,state='readonly')
         ttk.Label(f3,text='X').grid(row=6,column=0,sticky='w'); self.xc=ttk.Combobox(f3,textvariable=self.xcol,state='readonly'); self.xc.grid(row=6,column=1,sticky='we',padx=6)
         ttk.Label(f3,text='Y').grid(row=7,column=0,sticky='w'); self.yc=ttk.Combobox(f3,textvariable=self.ycol,state='readonly'); self.yc.grid(row=7,column=1,sticky='we',padx=6)
-        q=ttk.Frame(f3); q.grid(row=8,column=1,sticky='w',pady=6)
-        ttk.Button(q,text='Plot X-Y',command=lambda:self.plot_xy('line')).pack(side='left',padx=(0,8)); ttk.Button(q,text='Scatter',command=lambda:self.plot_xy('scatter')).pack(side='left',padx=(0,8)); ttk.Button(q,text='Export Selected Scope CSV',command=self.export_scope).pack(side='left',padx=(0,8))
+        ttk.Label(f3,text='Multi-Y').grid(row=8,column=0,sticky='nw')
+        self.ylist=tk.Listbox(f3,selectmode='extended',height=8,exportselection=False)
+        self.ylist.grid(row=8,column=1,sticky='we',padx=6,pady=(2,0))
+        q=ttk.Frame(f3); q.grid(row=9,column=1,sticky='w',pady=6)
+        ttk.Button(q,text='Plot X-Y',command=lambda:self.plot_xy('line')).pack(side='left',padx=(0,8)); ttk.Button(q,text='Scatter',command=lambda:self.plot_xy('scatter')).pack(side='left',padx=(0,8)); ttk.Button(q,text='Plot Multi-Y (stacked)',command=lambda:self.plot_multi_y('line')).pack(side='left',padx=(0,8)); ttk.Button(q,text='Export Selected Scope CSV',command=self.export_scope).pack(side='left',padx=(0,8))
 
-        ov=ttk.LabelFrame(f3,text='Overlay (Configurable)',padding=6); ov.grid(row=9,column=0,columnspan=3,sticky='we',pady=(8,2))
+        ov=ttk.LabelFrame(f3,text='Overlay (Configurable)',padding=6); ov.grid(row=10,column=0,columnspan=3,sticky='we',pady=(8,2))
         ttk.Button(ov,text='Load Overlay Options',command=self.load_overlay_options).grid(row=0,column=0,sticky='w',padx=(0,12))
         ttk.Label(ov,text='CSV signal').grid(row=0,column=1,sticky='w'); self.ov_csv=ttk.Combobox(ov,textvariable=self.ov_csv_col,state='readonly',width=38); self.ov_csv.grid(row=0,column=2,sticky='we',padx=6)
         ttk.Label(ov,text='XDF stream').grid(row=1,column=1,sticky='w'); self.ov_st=ttk.Combobox(ov,textvariable=self.ov_stream,state='readonly',width=38); self.ov_st.grid(row=1,column=2,sticky='we',padx=6); self.ov_st.bind('<<ComboboxSelected>>',lambda e:self.overlay_stream_changed())
@@ -551,6 +554,17 @@ class App:
             self.xc['values']=cols; self.yc['values']=nums if nums else cols
             self.xcol.set('time_sec' if 'time_sec' in cols else ('time' if 'time' in cols else cols[0]))
             self.ycol.set(([c for c in nums if c!=self.xcol.get()] or nums or cols)[0])
+            yvals=(nums if nums else cols)
+            self.ylist.delete(0, tk.END)
+            for c in yvals:
+                self.ylist.insert(tk.END, c)
+            if yvals:
+                try:
+                    idx=yvals.index(self.ycol.get())
+                    self.ylist.selection_set(idx)
+                    self.ylist.see(idx)
+                except Exception:
+                    pass
             self.mc['values']=mk
             if mk: self.mcol.set(mk[0]); self.marker_vals()
             self.df_f=None; self.set_progress(100,f'Loaded {len(cols)} columns.')
@@ -581,8 +595,48 @@ class App:
             if self.df is None: self.load_cols()
             d=self.active_df(); x=pd.to_numeric(d[self.xcol.get().strip()],errors='coerce'); y=pd.to_numeric(d[self.ycol.get().strip()],errors='coerce'); mask=x.notna()&y.notna()
             if not mask.any(): raise RuntimeError('No numeric points for X/Y.')
-            plt.figure(figsize=(10,5)); plt.scatter(x[mask],y[mask],s=12,alpha=0.75) if style=='scatter' else plt.plot(x[mask],y[mask],linewidth=1.2)
+            plt.figure(figsize=(10,5))
+            x_plot=x[mask]; y_plot=y[mask]
+            y_name=self.ycol.get()
+            is_fr3_state=isinstance(y_name,str) and y_name.startswith('XDF_FR3_State_')
+            if is_fr3_state:
+                plt.step(x_plot,y_plot,where='post',linewidth=1.4)
+            elif style=='scatter':
+                plt.scatter(x_plot,y_plot,s=12,alpha=0.75)
+            else:
+                plt.plot(x_plot,y_plot,linewidth=1.2)
             plt.xlabel(self.xcol.get()); plt.ylabel(self.ycol.get()); plt.title(f"{Path(self.csv.get()).name}: {self.ycol.get()} vs {self.xcol.get()}"); plt.grid(True,alpha=0.35); plt.tight_layout(); plt.show(); self.set('Plot displayed.')
+        except Exception as e: messagebox.showerror('Plot Error',f'{e}\n\n{traceback.format_exc()}')
+
+    def plot_multi_y(self, style='line'):
+        try:
+            if self.df is None: self.load_cols()
+            d=self.active_df(); x=pd.to_numeric(d[self.xcol.get().strip()],errors='coerce')
+            sel=self.ylist.curselection()
+            ycols=[self.ylist.get(i) for i in sel] if sel else [self.ycol.get().strip()]
+            if not ycols: raise RuntimeError('Select at least one Y column.')
+            fig,axes=plt.subplots(len(ycols),1,sharex=True,figsize=(11,max(3,2.5*len(ycols))))
+            if len(ycols)==1: axes=[axes]
+            plotted=0
+            for ax,c in zip(axes,ycols):
+                y=pd.to_numeric(d[c],errors='coerce'); mask=x.notna()&y.notna()
+                if not mask.any():
+                    ax.text(0.5,0.5,'No numeric points',ha='center',va='center',transform=ax.transAxes)
+                    ax.set_ylabel(c); ax.grid(True,alpha=0.35); continue
+                x_plot=x[mask]; y_plot=y[mask]
+                if c.startswith('XDF_FR3_State_'):
+                    ax.step(x_plot,y_plot,where='post',linewidth=1.4)
+                elif style=='scatter':
+                    ax.scatter(x_plot,y_plot,s=10,alpha=0.75)
+                else:
+                    ax.plot(x_plot,y_plot,linewidth=1.2)
+                ax.set_ylabel(c); ax.grid(True,alpha=0.35); plotted+=1
+            axes[-1].set_xlabel(self.xcol.get())
+            fig.suptitle(f"{Path(self.csv.get()).name}: {len(ycols)} signals vs {self.xcol.get()}")
+            fig.tight_layout()
+            plt.show()
+            if plotted==0: self.set('Multi-Y plotted, but no numeric data found in selected series.')
+            else: self.set(f'Multi-Y plot displayed ({plotted}/{len(ycols)} with numeric data).')
         except Exception as e: messagebox.showerror('Plot Error',f'{e}\n\n{traceback.format_exc()}')
 
     def export_scope(self):

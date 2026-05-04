@@ -66,8 +66,11 @@ Startup behavior:
 
 3. `Visualizers`
 - Load CSV columns and create X-Y/scatter plots.
+- Multi-Y plotting is supported via `Multi-Y` list selection and `Plot Multi-Y (stacked)`.
+- Multi-Y plots are rendered as vertically stacked subplots (top-to-bottom) with shared X-axis.
 - Optional scope by marker start/end.
 - Export selected scope CSV.
+- `XDF_FR3_State_*` channels are plotted as step signals (no marker dots) for clearer binary-state visualization.
 
 4. `Overlay (Configurable)`
 - Load overlay options from selected CSV + XDF.
