@@ -19,6 +19,9 @@ class App:
         self.flat_win=tk.DoubleVar(value=2.0); self.flat_rel=tk.DoubleVar(value=0.02); self.tol=tk.DoubleVar(value=0.05); self.include=tk.BooleanVar(value=True)
         self.align_mode=tk.StringVar(value='auto'); self.manual_t_opt=tk.DoubleVar(value=0.0)
         self.scope=tk.StringVar(value='all'); self.xcol=tk.StringVar(); self.ycol=tk.StringVar(); self.mcol=tk.StringVar(); self.mstart=tk.StringVar(); self.mend=tk.StringVar()
+        self.x_label=tk.StringVar(); self.y_label=tk.StringVar(); self.plot_title=tk.StringVar(); self.multi_x_label=tk.StringVar(); self.multi_y_label=tk.StringVar(); self.multi_plot_title=tk.StringVar()
+        self.time_unit=tk.StringVar(value='seconds')
+        self.plot_queue=[]
         self.ov_csv_col=tk.StringVar(); self.ov_stream=tk.StringVar(); self.ov_xdf_col=tk.StringVar()
         self.ov_streams=[]; self.ov_stream_map={}
         self.df=None; self.df_f=None
@@ -80,13 +83,37 @@ class App:
         self.el=ttk.Label(f3,text='End marker'); self.ec=ttk.Combobox(f3,textvariable=self.mend,state='readonly')
         ttk.Label(f3,text='X').grid(row=6,column=0,sticky='w'); self.xc=ttk.Combobox(f3,textvariable=self.xcol,state='readonly'); self.xc.grid(row=6,column=1,sticky='we',padx=6)
         ttk.Label(f3,text='Y').grid(row=7,column=0,sticky='w'); self.yc=ttk.Combobox(f3,textvariable=self.ycol,state='readonly'); self.yc.grid(row=7,column=1,sticky='we',padx=6)
-        ttk.Label(f3,text='Multi-Y').grid(row=8,column=0,sticky='nw')
-        self.ylist=tk.Listbox(f3,selectmode='extended',height=8,exportselection=False)
-        self.ylist.grid(row=8,column=1,sticky='we',padx=6,pady=(2,0))
-        q=ttk.Frame(f3); q.grid(row=9,column=1,sticky='w',pady=6)
+        tu=ttk.Frame(f3); tu.grid(row=7,column=2,sticky='w')
+        ttk.Label(tu,text='time_sec unit').pack(side='left',padx=(0,4))
+        self.time_unit_cb=ttk.Combobox(tu,textvariable=self.time_unit,state='readonly',width=10,values=['seconds','minutes'])
+        self.time_unit_cb.pack(side='left')
+        ttk.Label(f3,text='X axis label').grid(row=8,column=0,sticky='w'); ttk.Entry(f3,textvariable=self.x_label,width=40).grid(row=8,column=1,sticky='we',padx=6)
+        ttk.Label(f3,text='Y axis label').grid(row=9,column=0,sticky='w'); ttk.Entry(f3,textvariable=self.y_label,width=40).grid(row=9,column=1,sticky='we',padx=6)
+        ttk.Label(f3,text='Plot title').grid(row=10,column=0,sticky='w'); ttk.Entry(f3,textvariable=self.plot_title,width=40).grid(row=10,column=1,sticky='we',padx=6)
+
+        mq=ttk.LabelFrame(f3,text='Multi-Y Queue (ordered)',padding=6); mq.grid(row=11,column=0,columnspan=3,sticky='we',pady=(6,2))
+        ttk.Label(mq,text='Select Y').grid(row=0,column=0,sticky='w')
+        self.multi_y_pick=ttk.Combobox(mq,state='readonly',width=38); self.multi_y_pick.grid(row=0,column=1,sticky='we',padx=6)
+        ttk.Label(mq,text='Y label').grid(row=1,column=0,sticky='w')
+        ttk.Entry(mq,textvariable=self.multi_y_label,width=40).grid(row=1,column=1,sticky='we',padx=6)
+        ttk.Label(mq,text='Shared X label').grid(row=2,column=0,sticky='w')
+        ttk.Entry(mq,textvariable=self.multi_x_label,width=40).grid(row=2,column=1,sticky='we',padx=6)
+        ttk.Label(mq,text='Plot title').grid(row=3,column=0,sticky='w')
+        ttk.Entry(mq,textvariable=self.multi_plot_title,width=40).grid(row=3,column=1,sticky='we',padx=6)
+        controls=ttk.Frame(mq); controls.grid(row=0,column=2,rowspan=2,sticky='nsw',padx=(8,0))
+        ttk.Button(controls,text='Add to Queue',command=self.add_to_plot_queue).pack(side='top',fill='x',pady=(0,4))
+        ttk.Button(controls,text='Remove Selected',command=self.remove_from_plot_queue).pack(side='top',fill='x',pady=(0,4))
+        ttk.Button(controls,text='Move Up',command=lambda:self.move_plot_queue(-1)).pack(side='top',fill='x',pady=(0,4))
+        ttk.Button(controls,text='Move Down',command=lambda:self.move_plot_queue(1)).pack(side='top',fill='x',pady=(0,4))
+        ttk.Button(controls,text='Clear Queue',command=self.clear_plot_queue).pack(side='top',fill='x')
+        self.plot_queue_list=tk.Listbox(mq,selectmode='browse',height=8,exportselection=False)
+        self.plot_queue_list.grid(row=4,column=0,columnspan=3,sticky='we',pady=(6,0))
+        mq.columnconfigure(1,weight=1)
+
+        q=ttk.Frame(f3); q.grid(row=12,column=1,sticky='w',pady=6)
         ttk.Button(q,text='Plot X-Y',command=lambda:self.plot_xy('line')).pack(side='left',padx=(0,8)); ttk.Button(q,text='Scatter',command=lambda:self.plot_xy('scatter')).pack(side='left',padx=(0,8)); ttk.Button(q,text='Plot Multi-Y (stacked)',command=lambda:self.plot_multi_y('line')).pack(side='left',padx=(0,8)); ttk.Button(q,text='Export Selected Scope CSV',command=self.export_scope).pack(side='left',padx=(0,8))
 
-        ov=ttk.LabelFrame(f3,text='Overlay (Configurable)',padding=6); ov.grid(row=10,column=0,columnspan=3,sticky='we',pady=(8,2))
+        ov=ttk.LabelFrame(f3,text='Overlay (Configurable)',padding=6); ov.grid(row=13,column=0,columnspan=3,sticky='we',pady=(8,2))
         ttk.Button(ov,text='Load Overlay Options',command=self.load_overlay_options).grid(row=0,column=0,sticky='w',padx=(0,12))
         ttk.Label(ov,text='CSV signal').grid(row=0,column=1,sticky='w'); self.ov_csv=ttk.Combobox(ov,textvariable=self.ov_csv_col,state='readonly',width=38); self.ov_csv.grid(row=0,column=2,sticky='we',padx=6)
         ttk.Label(ov,text='XDF stream').grid(row=1,column=1,sticky='w'); self.ov_st=ttk.Combobox(ov,textvariable=self.ov_stream,state='readonly',width=38); self.ov_st.grid(row=1,column=2,sticky='we',padx=6); self.ov_st.bind('<<ComboboxSelected>>',lambda e:self.overlay_stream_changed())
@@ -555,20 +582,54 @@ class App:
             self.xcol.set('time_sec' if 'time_sec' in cols else ('time' if 'time' in cols else cols[0]))
             self.ycol.set(([c for c in nums if c!=self.xcol.get()] or nums or cols)[0])
             yvals=(nums if nums else cols)
-            self.ylist.delete(0, tk.END)
-            for c in yvals:
-                self.ylist.insert(tk.END, c)
-            if yvals:
-                try:
-                    idx=yvals.index(self.ycol.get())
-                    self.ylist.selection_set(idx)
-                    self.ylist.see(idx)
-                except Exception:
-                    pass
+            self.multi_y_pick['values']=yvals
+            if yvals and not self.multi_y_pick.get():
+                self.multi_y_pick.set(yvals[0])
             self.mc['values']=mk
             if mk: self.mcol.set(mk[0]); self.marker_vals()
             self.df_f=None; self.set_progress(100,f'Loaded {len(cols)} columns.')
         self._bg(task, ok, 'Load CSV')
+
+    def refresh_plot_queue_ui(self):
+        self.plot_queue_list.delete(0, tk.END)
+        for i,item in enumerate(self.plot_queue, start=1):
+            yl=item.get('ylabel', '').strip() or item['ycol']
+            self.plot_queue_list.insert(tk.END, f'{i}. {item["ycol"]} -> {yl}')
+
+    def add_to_plot_queue(self):
+        ycol=self.multi_y_pick.get().strip()
+        if not ycol:
+            return messagebox.showwarning('Queue', 'Select a Y column first.')
+        ylabel=self.multi_y_label.get().strip() or ycol
+        self.plot_queue.append({'ycol':ycol,'ylabel':ylabel})
+        self.refresh_plot_queue_ui()
+        self.set(f'Added to queue: {ycol}')
+
+    def remove_from_plot_queue(self):
+        sel=self.plot_queue_list.curselection()
+        if not sel:
+            return
+        i=int(sel[0])
+        if 0<=i<len(self.plot_queue):
+            del self.plot_queue[i]
+            self.refresh_plot_queue_ui()
+
+    def move_plot_queue(self, direction):
+        sel=self.plot_queue_list.curselection()
+        if not sel:
+            return
+        i=int(sel[0]); j=i+int(direction)
+        if j<0 or j>=len(self.plot_queue):
+            return
+        self.plot_queue[i],self.plot_queue[j]=self.plot_queue[j],self.plot_queue[i]
+        self.refresh_plot_queue_ui()
+        self.plot_queue_list.selection_clear(0, tk.END)
+        self.plot_queue_list.selection_set(j)
+        self.plot_queue_list.see(j)
+
+    def clear_plot_queue(self):
+        self.plot_queue=[]
+        self.refresh_plot_queue_ui()
 
     def marker_vals(self):
         if self.df is None: return
@@ -593,7 +654,12 @@ class App:
     def plot_xy(self, style='line'):
         try:
             if self.df is None: self.load_cols()
-            d=self.active_df(); x=pd.to_numeric(d[self.xcol.get().strip()],errors='coerce'); y=pd.to_numeric(d[self.ycol.get().strip()],errors='coerce'); mask=x.notna()&y.notna()
+            d=self.active_df(); xname=self.xcol.get().strip(); x=pd.to_numeric(d[xname],errors='coerce'); y=pd.to_numeric(d[self.ycol.get().strip()],errors='coerce')
+            x_unit_label=xname
+            if xname=='time_sec' and self.time_unit.get().strip().lower()=='minutes':
+                x=x/60.0
+                x_unit_label='time_min'
+            mask=x.notna()&y.notna()
             if not mask.any(): raise RuntimeError('No numeric points for X/Y.')
             plt.figure(figsize=(10,5))
             x_plot=x[mask]; y_plot=y[mask]
@@ -605,24 +671,31 @@ class App:
                 plt.scatter(x_plot,y_plot,s=12,alpha=0.75)
             else:
                 plt.plot(x_plot,y_plot,linewidth=1.2)
-            plt.xlabel(self.xcol.get()); plt.ylabel(self.ycol.get()); plt.title(f"{Path(self.csv.get()).name}: {self.ycol.get()} vs {self.xcol.get()}"); plt.grid(True,alpha=0.35); plt.tight_layout(); plt.show(); self.set('Plot displayed.')
+            xlab=self.x_label.get().strip() or x_unit_label
+            ylab=self.y_label.get().strip() or self.ycol.get()
+            title=self.plot_title.get().strip() or f"{Path(self.csv.get()).name}: {self.ycol.get()} vs {x_unit_label}"
+            plt.xlabel(xlab); plt.ylabel(ylab); plt.title(title); plt.grid(True,alpha=0.35); plt.tight_layout(); plt.show(); self.set('Plot displayed.')
         except Exception as e: messagebox.showerror('Plot Error',f'{e}\n\n{traceback.format_exc()}')
 
     def plot_multi_y(self, style='line'):
         try:
             if self.df is None: self.load_cols()
-            d=self.active_df(); x=pd.to_numeric(d[self.xcol.get().strip()],errors='coerce')
-            sel=self.ylist.curselection()
-            ycols=[self.ylist.get(i) for i in sel] if sel else [self.ycol.get().strip()]
-            if not ycols: raise RuntimeError('Select at least one Y column.')
-            fig,axes=plt.subplots(len(ycols),1,sharex=True,figsize=(11,max(3,2.5*len(ycols))))
-            if len(ycols)==1: axes=[axes]
+            d=self.active_df(); xname=self.xcol.get().strip(); x=pd.to_numeric(d[xname],errors='coerce')
+            x_unit_label=xname
+            if xname=='time_sec' and self.time_unit.get().strip().lower()=='minutes':
+                x=x/60.0
+                x_unit_label='time_min'
+            queue=self.plot_queue if self.plot_queue else [{'ycol':self.ycol.get().strip(),'ylabel':self.ycol.get().strip()}]
+            if not queue: raise RuntimeError('Add at least one signal to queue.')
+            fig,axes=plt.subplots(len(queue),1,sharex=True,figsize=(11,max(3,2.5*len(queue))))
+            if len(queue)==1: axes=[axes]
             plotted=0
-            for ax,c in zip(axes,ycols):
+            for ax,item in zip(axes,queue):
+                c=item['ycol']; yl=item.get('ylabel',c)
                 y=pd.to_numeric(d[c],errors='coerce'); mask=x.notna()&y.notna()
                 if not mask.any():
                     ax.text(0.5,0.5,'No numeric points',ha='center',va='center',transform=ax.transAxes)
-                    ax.set_ylabel(c); ax.grid(True,alpha=0.35); continue
+                    ax.set_ylabel(yl); ax.grid(True,alpha=0.35); continue
                 x_plot=x[mask]; y_plot=y[mask]
                 if c.startswith('XDF_FR3_State_'):
                     ax.step(x_plot,y_plot,where='post',linewidth=1.4)
@@ -630,13 +703,15 @@ class App:
                     ax.scatter(x_plot,y_plot,s=10,alpha=0.75)
                 else:
                     ax.plot(x_plot,y_plot,linewidth=1.2)
-                ax.set_ylabel(c); ax.grid(True,alpha=0.35); plotted+=1
-            axes[-1].set_xlabel(self.xcol.get())
-            fig.suptitle(f"{Path(self.csv.get()).name}: {len(ycols)} signals vs {self.xcol.get()}")
+                ax.set_ylabel(yl); ax.grid(True,alpha=0.35); plotted+=1
+            xlab=self.multi_x_label.get().strip() or x_unit_label
+            axes[-1].set_xlabel(xlab)
+            title=self.multi_plot_title.get().strip() or f"{Path(self.csv.get()).name}: {len(queue)} signals vs {x_unit_label}"
+            fig.suptitle(title)
             fig.tight_layout()
             plt.show()
-            if plotted==0: self.set('Multi-Y plotted, but no numeric data found in selected series.')
-            else: self.set(f'Multi-Y plot displayed ({plotted}/{len(ycols)} with numeric data).')
+            if plotted==0: self.set('Multi-Y plotted, but no numeric data found in selected queue signals.')
+            else: self.set(f'Multi-Y plot displayed ({plotted}/{len(queue)} with numeric data).')
         except Exception as e: messagebox.showerror('Plot Error',f'{e}\n\n{traceback.format_exc()}')
 
     def export_scope(self):
